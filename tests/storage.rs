@@ -41,9 +41,11 @@ fn evidence_is_persisted_with_task_and_event() {
         .unwrap();
     assert_eq!(event, "created");
     let evidence: String = db
-        .query_row("SELECT reference FROM evidence WHERE task_id = 't'", [], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT reference FROM evidence WHERE task_id = 't'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(evidence, "evidence-1");
     drop(db);
