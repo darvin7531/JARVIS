@@ -64,3 +64,25 @@ fn valid_config_starts_and_handles_sigterm() {
     assert!(child.wait().unwrap().success());
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn invalid_values_and_malformed_input_are_redacted() {
+    let path = std::env::temp_dir().join(format!("jarvis-sensitive-path-{}.json", std::process::id()));
+    for input in [
+        r#"{"shutdown_timeout_secs":0}"#,
+        r#"{"shutdown_timeout_secs":31}"#,
+        r#"{"shutdown_timeout_secs":"sensitive-value"}"#,
+        r#"{"sensitive-value": "#,
+    ] {
+        std::fs::write(&path, input).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_jarvis"))
+            .arg("--config")
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert_eq!(output.stderr, b"{\"error\":\"invalid_config\"}\n");
+    }
+    std::fs::remove_file(path).unwrap();
+}
