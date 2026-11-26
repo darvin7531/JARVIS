@@ -784,11 +784,9 @@ fn reopen_rejects_integrity_errors_without_repairing_data() {
     assert!(SqliteStore::open(&dir).is_err());
     let db = rusqlite::Connection::open(&path).unwrap();
     let count: i64 = db
-        .query_row(
-            "SELECT count(*) FROM tasks WHERE title IS NULL",
-            [],
-            |row| row.get(0),
-        )
+        .query_row("SELECT count(*) FROM tasks WHERE id='broken'", [], |row| {
+            row.get(0)
+        })
         .unwrap();
     assert_eq!(count, 1);
     drop(db);
