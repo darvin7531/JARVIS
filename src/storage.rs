@@ -89,7 +89,10 @@ impl SqliteStore {
     }
 
     pub fn update_task(&mut self, task: &Task, event: &str) -> Result<(), StorageError> {
-        let previous = task.version.checked_sub(1).ok_or(StorageError::OperationFailed)?;
+        let previous = task
+            .version
+            .checked_sub(1)
+            .ok_or(StorageError::OperationFailed)?;
         let tx = self.db.transaction()?;
         let changed = tx.execute(
             "UPDATE tasks SET version = ?1, title = ?2 WHERE id = ?3 AND version = ?4",
