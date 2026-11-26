@@ -688,3 +688,33 @@ fn storage_error_output_does_not_leak_secrets() {
     assert!(output.contains("storage operation failed"));
     assert!(!output.contains(SECRET));
 }
+
+#[test]
+fn reopen_rejects_extra_schema_objects_and_foreign_key_violations() {
+    for (name, sql) in [
+        ("trigger", "CREATE TRIGGER evil AFTER INSERT ON tasks BEGIN UPDATE tasks SET title='changed'; END;"),
+        ("view", "CREATE VIEW evil AS SELECT * FROM tasks;"),
+        ("foreign-key", "INSERT INTO events (task_id, event) VALUES ('missing', 'orphan');"),
+    ] {
+        let dir = std::env::temp_dir().join(format!("jarvis-invalid-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        drop(SqliteStore::create(&dir).unwrap());
+        let db = rusqlite::Connection::open(dir.join("jarvis.sqlite3")).unwrap();
+        db.execute_batch(sql).unwrap();
+        drop(db);
+        assert!(SqliteStore::open(&dir).is_err(), "accepted {name}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
+fn reopen_rejects_public_workspace_without_changing_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("jarvis-public-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    drop(SqliteStore::create(&dir).unwrap());
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(SqliteStore::open(&dir).is_err());
+    assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o755);
+    std::fs::remove_dir_all(dir).unwrap();
+}
