@@ -430,15 +430,25 @@ fn audit_records_revision_and_timestamp() {
     let dir = std::env::temp_dir().join(format!("jarvis-audit-metadata-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let mut store = SqliteStore::open(&dir).unwrap();
-    let mut task = Task { id: "t".into(), version: 1, title: "first".into() };
+    let mut task = Task {
+        id: "t".into(),
+        version: 1,
+        title: "first".into(),
+    };
     store.create_task(&task, "created", &[]).unwrap();
     task.version = 2;
     store.update_task(&task, "updated").unwrap();
     store.append_event("t", "checked").unwrap();
     drop(store);
     let db = rusqlite::Connection::open(dir.join("jarvis.sqlite3")).unwrap();
-    let mut query = db.prepare("SELECT revision, occurred_at FROM events ORDER BY id").unwrap();
-    let rows: Vec<(i64, String)> = query.query_map([], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().map(Result::unwrap).collect();
+    let mut query = db
+        .prepare("SELECT revision, occurred_at FROM events ORDER BY id")
+        .unwrap();
+    let rows: Vec<(i64, String)> = query
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
     assert_eq!(rows.iter().map(|r| r.0).collect::<Vec<_>>(), [1, 2, 2]);
     assert!(rows.iter().all(|r| r.1.ends_with('Z')));
     drop(query);
