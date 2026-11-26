@@ -698,6 +698,7 @@ fn storage_error_output_does_not_leak_secrets() {
 fn reopen_rejects_extra_schema_objects_and_foreign_key_violations() {
     for (name, sql) in [
         ("trigger", "CREATE TRIGGER evil AFTER INSERT ON tasks BEGIN UPDATE tasks SET title='changed'; END;"),
+        ("sqlite-prefix-trigger", "CREATE TRIGGER sqliteXevil AFTER INSERT ON tasks BEGIN UPDATE tasks SET title='changed'; END;"),
         ("view", "CREATE VIEW evil AS SELECT * FROM tasks;"),
         ("foreign-key", "PRAGMA foreign_keys=OFF; INSERT INTO events (task_id, event) VALUES ('missing', 'orphan');"),
     ] {
