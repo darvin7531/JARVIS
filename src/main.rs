@@ -1,6 +1,14 @@
-use serde::Deserialize;
 use jarvis::{Event, Lifecycle};
-use std::{env, fs, io, process::ExitCode, sync::{atomic::{AtomicBool, Ordering}, mpsc}, time::Duration};
+use serde::Deserialize;
+use std::{
+    env, fs, io,
+    process::ExitCode,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    time::Duration,
+};
 
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -10,7 +18,9 @@ struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { shutdown_timeout_secs: 1 }
+        Self {
+            shutdown_timeout_secs: 1,
+        }
     }
 }
 
@@ -88,8 +98,11 @@ fn run() -> Result<(), Error> {
     });
     while !SHUTDOWN.load(Ordering::Relaxed) {
         match receiver.recv_timeout(Duration::from_secs(config.shutdown_timeout_secs)) {
-            Ok(result) => { result.map_err(|_| Error::StdinReadFailed)?; break; }
-            Err(mpsc::RecvTimeoutError::Timeout) => {},
+            Ok(result) => {
+                result.map_err(|_| Error::StdinReadFailed)?;
+                break;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => return Err(Error::StdinReadFailed),
         }
     }
