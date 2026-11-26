@@ -410,7 +410,9 @@ fn sqlite_failures_redact_task_values() {
         title: "secret-token-value".into(),
     };
     store.create_task(&task, "created", &[]).unwrap();
-    let error = store.create_task(&task, "secret-token-value", &[]).unwrap_err();
+    let error = store
+        .create_task(&task, "secret-token-value", &[])
+        .unwrap_err();
     assert!(!format!("{error} {error:?}").contains("secret-token-value"));
     drop(store);
     std::fs::remove_dir_all(dir).unwrap();
