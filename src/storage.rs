@@ -80,9 +80,9 @@ impl SqliteStore {
     }
 
     pub fn events(&self, task_id: &str) -> Result<Vec<String>, StorageError> {
-        let mut statement = self.db.prepare(
-            "SELECT event FROM events WHERE task_id = ?1 ORDER BY id",
-        )?;
+        let mut statement = self
+            .db
+            .prepare("SELECT event FROM events WHERE task_id = ?1 ORDER BY id")?;
         let events = statement
             .query_map([task_id], |row| row.get(0))?
             .collect::<Result<Vec<_>, _>>()?;
