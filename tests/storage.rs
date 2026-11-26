@@ -352,3 +352,20 @@ fn versioned_update_is_available_through_storage_port() {
     drop(store);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn unsupported_schema_has_a_distinct_redacted_error() {
+    let dir = std::env::temp_dir().join(format!("jarvis-unsupported-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = rusqlite::Connection::open(dir.join("jarvis.sqlite3")).unwrap();
+    db.pragma_update(None, "user_version", 999).unwrap();
+    drop(db);
+    let error = match SqliteStore::open(&dir) {
+        Err(error) => error,
+        Ok(_) => panic!("unsupported version accepted"),
+    };
+    assert_eq!(format!("{error:?}"), "UnsupportedSchema");
+    assert_eq!(error.to_string(), "unsupported schema version");
+    std::fs::remove_dir_all(dir).unwrap();
+}
