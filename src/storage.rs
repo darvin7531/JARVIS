@@ -42,7 +42,7 @@ impl SqliteStore {
         db.execute_batch("PRAGMA foreign_keys = ON;")?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if !(0..=2).contains(&version) {
+        if !(0..=3).contains(&version) {
             return Err(StorageError::UnsupportedSchema);
         }
         if version == 0 {
@@ -58,6 +58,9 @@ impl SqliteStore {
         }
         if version < 2 {
             tx.execute_batch("CREATE INDEX events_task_id ON events(task_id, id); CREATE INDEX evidence_task_id ON evidence(task_id); PRAGMA user_version = 2;")?;
+        }
+        if version < 3 {
+            tx.execute_batch("ALTER TABLE events ADD COLUMN revision INTEGER; ALTER TABLE events ADD COLUMN occurred_at TEXT; PRAGMA user_version = 3;")?;
         }
         tx.commit()?;
         Ok(Self { db })
@@ -75,8 +78,8 @@ impl SqliteStore {
             params![task.id, task.version, task.title],
         )?;
         tx.execute(
-            "INSERT INTO events (task_id, event) VALUES (?1, ?2)",
-            params![task.id, event],
+            "INSERT INTO events (task_id, event, revision, occurred_at) VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            params![task.id, event, task.version],
         )?;
         for reference in evidence {
             tx.execute(
@@ -102,18 +105,21 @@ impl SqliteStore {
             return Err(StorageError::OperationFailed);
         }
         tx.execute(
-            "INSERT INTO events (task_id, event) VALUES (?1, ?2)",
-            params![task.id, event],
+            "INSERT INTO events (task_id, event, revision, occurred_at) VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            params![task.id, event, task.version],
         )?;
         tx.commit()?;
         Ok(())
     }
 
     pub fn append_event(&mut self, task_id: &str, event: &str) -> Result<(), StorageError> {
-        self.db.execute(
-            "INSERT INTO events (task_id, event) VALUES (?1, ?2)",
+        let changed = self.db.execute(
+            "INSERT INTO events (task_id, event, revision, occurred_at) SELECT id, ?2, version, strftime('%Y-%m-%dT%H:%M:%fZ', 'now') FROM tasks WHERE id = ?1",
             params![task_id, event],
         )?;
+        if changed != 1 {
+            return Err(StorageError::OperationFailed);
+        }
         Ok(())
     }
 
