@@ -228,3 +228,29 @@ fn task_and_audit_writes_work_through_storage_port() {
     drop(store);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn updating_task_checks_version_and_records_audit_atomically() {
+    let dir = std::env::temp_dir().join(format!("jarvis-revision-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut store = SqliteStore::open(&dir).unwrap();
+    let initial = Task {
+        id: "versioned".into(),
+        version: 1,
+        title: "first".into(),
+    };
+    let revised = Task {
+        id: "versioned".into(),
+        version: 2,
+        title: "second".into(),
+    };
+    store.create_task(&initial, "created", &[]).unwrap();
+    store.update_task(&revised, "updated").unwrap();
+    assert!(store.update_task(&revised, "duplicate").is_err());
+    drop(store);
+    let store = SqliteStore::open(&dir).unwrap();
+    assert_eq!(store.task("versioned").unwrap(), Some(revised));
+    assert_eq!(store.events("versioned").unwrap(), ["created", "updated"]);
+    drop(store);
+    std::fs::remove_dir_all(dir).unwrap();
+}

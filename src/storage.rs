@@ -79,6 +79,10 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub fn update_task(&mut self, _: &Task, _: &str) -> Result<(), StorageError> {
+        Err(StorageError)
+    }
+
     pub fn append_event(&mut self, task_id: &str, event: &str) -> Result<(), StorageError> {
         self.db.execute(
             "INSERT INTO events (task_id, event) VALUES (?1, ?2)",
