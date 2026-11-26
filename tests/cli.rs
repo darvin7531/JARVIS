@@ -87,3 +87,36 @@ fn invalid_values_and_malformed_input_are_redacted() {
     }
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn sigterm_is_prompt_even_with_long_timeout() {
+    let path = std::env::temp_dir().join(format!("jarvis-prompt-{}.json", std::process::id()));
+    std::fs::write(&path, r#"{"shutdown_timeout_secs":30}"#).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_jarvis"))
+        .arg("--config")
+        .arg(&path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(Command::new("/bin/kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap()
+        .success());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break Some(status);
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    std::fs::remove_file(path).unwrap();
+    assert!(status.is_some_and(|status| status.success()), "shutdown timed out or failed");
+}
