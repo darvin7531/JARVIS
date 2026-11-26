@@ -126,7 +126,7 @@ pub trait TaskStore {
 }
 
 impl TaskStore for SqliteStore {
-    fn read_task(&self, _: &str) -> Result<Option<Task>, StorageError> {
-        Ok(None)
+    fn read_task(&self, id: &str) -> Result<Option<Task>, StorageError> {
+        self.task(id)
     }
 }
