@@ -275,3 +275,24 @@ fn evidence_references_are_readable_through_port_after_reopen() {
     drop(store);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn migrates_v1_database_forward_without_losing_records() {
+    let dir = std::env::temp_dir().join(format!("jarvis-v1-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = rusqlite::Connection::open(dir.join("jarvis.sqlite3")).unwrap();
+    db.execute_batch("CREATE TABLE tasks (id TEXT PRIMARY KEY, version INTEGER NOT NULL, title TEXT NOT NULL); CREATE TABLE events (id INTEGER PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), event TEXT NOT NULL); CREATE TABLE evidence (task_id TEXT NOT NULL REFERENCES tasks(id), reference TEXT NOT NULL); INSERT INTO tasks VALUES ('old', 1, 'preserved'); INSERT INTO events (task_id, event) VALUES ('old', 'created'); PRAGMA user_version = 1;").unwrap();
+    drop(db);
+    let store = SqliteStore::open(&dir).unwrap();
+    assert_eq!(store.task("old").unwrap().unwrap().title, "preserved");
+    assert_eq!(store.events("old").unwrap(), ["created"]);
+    drop(store);
+    let db = rusqlite::Connection::open(dir.join("jarvis.sqlite3")).unwrap();
+    let version: i64 = db
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 2);
+    drop(db);
+    std::fs::remove_dir_all(dir).unwrap();
+}
