@@ -142,14 +142,19 @@ pub trait TaskStore {
 }
 
 impl TaskStore for SqliteStore {
-    fn write_task(&mut self, _: &Task, _: &str, _: &[String]) -> Result<(), StorageError> {
-        Ok(())
+    fn write_task(
+        &mut self,
+        task: &Task,
+        event: &str,
+        evidence: &[String],
+    ) -> Result<(), StorageError> {
+        self.create_task(task, event, evidence)
     }
-    fn write_event(&mut self, _: &str, _: &str) -> Result<(), StorageError> {
-        Ok(())
+    fn write_event(&mut self, task_id: &str, event: &str) -> Result<(), StorageError> {
+        self.append_event(task_id, event)
     }
-    fn read_events(&self, _: &str) -> Result<Vec<String>, StorageError> {
-        Ok(Vec::new())
+    fn read_events(&self, task_id: &str) -> Result<Vec<String>, StorageError> {
+        self.events(task_id)
     }
     fn read_task(&self, id: &str) -> Result<Option<Task>, StorageError> {
         self.task(id)
