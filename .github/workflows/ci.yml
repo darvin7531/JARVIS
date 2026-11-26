@@ -11,9 +11,4 @@ jobs:
         with:
           toolchain: 1.85.1
           components: rustfmt, clippy
-      - run: cargo generate-lockfile
-      - uses: actions/upload-artifact@v4
-        with:
-          name: cargo-lock
-          path: Cargo.lock
       - run: cargo test --locked
