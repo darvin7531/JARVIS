@@ -110,3 +110,56 @@ fn audit_events_are_append_only_and_survive_reopen() {
     drop(store);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn failed_event_write_rolls_back_task_creation() {
+    let dir = std::env::temp_dir().join(format!("jarvis-rollback-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut store = SqliteStore::open(&dir).unwrap();
+    let db = rusqlite::Connection::open(dir.join("jarvis.sqlite3")).unwrap();
+    db.execute_batch(
+        "CREATE TRIGGER fail_event BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT, 'fail'); END;",
+    )
+    .unwrap();
+    let task = Task {
+        id: "rolled-back".into(),
+        version: 1,
+        title: "test".into(),
+    };
+    assert!(store.create_task(&task, "created", &[]).is_err());
+    assert_eq!(store.task("rolled-back").unwrap(), None);
+    drop(db);
+    drop(store);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn opens_existing_schema_idempotently() {
+    let dir = std::env::temp_dir().join(format!("jarvis-migration-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    drop(SqliteStore::open(&dir).unwrap());
+    drop(SqliteStore::open(&dir).unwrap());
+    let db = rusqlite::Connection::open(dir.join("jarvis.sqlite3")).unwrap();
+    let version: i64 = db
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 1);
+    drop(db);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn corrupt_database_fails_without_exposing_path() {
+    let root = std::env::temp_dir().join(format!("jarvis-secret-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("jarvis.sqlite3"), b"not a sqlite database").unwrap();
+    let result = SqliteStore::open(&root);
+    let err = match result {
+        Err(err) => err,
+        Ok(_) => panic!("corrupt database unexpectedly opened"),
+    };
+    assert_eq!(err.to_string(), "storage operation failed");
+    assert!(!format!("{err:?}").contains("secret"));
+    std::fs::remove_dir_all(root).unwrap();
+}
