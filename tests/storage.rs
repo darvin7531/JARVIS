@@ -715,6 +715,9 @@ fn reopen_rejects_public_workspace_without_changing_permissions() {
     drop(SqliteStore::create(&dir).unwrap());
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert!(SqliteStore::open(&dir).is_err());
-    assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o755);
+    assert_eq!(
+        std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+        0o755
+    );
     std::fs::remove_dir_all(dir).unwrap();
 }
