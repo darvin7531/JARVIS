@@ -68,7 +68,7 @@ fn newline_stops_service() {
 }
 
 fn signal_stops_service(signal: &str, name: &str) {
-    let path = config(name, br#"{"shutdown_timeout_secs":30}"#);
+    let path = config(name, b"{}");
     let (mut child, output) = spawn(Some(&path), Stdio::null());
     event(&output, "started");
     std::thread::sleep(Duration::from_millis(200));
@@ -98,8 +98,7 @@ fn invalid_config_is_redacted_and_bounded() {
     let path = config("invalid", b"");
     for data in [
         b"{\"secret\":\"sensitive-value\"}".to_vec(),
-        b"{\"shutdown_timeout_secs\":0}".to_vec(),
-        b"{\"shutdown_timeout_secs\":31}".to_vec(),
+        b"{\"shutdown_timeout_secs\":1}".to_vec(),
         b"{\"sensitive-value\":".to_vec(),
         vec![b' '; 65537],
     ] {

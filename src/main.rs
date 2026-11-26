@@ -14,19 +14,9 @@ use std::{
 
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-struct Config {
-    shutdown_timeout_secs: u64,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            shutdown_timeout_secs: 1,
-        }
-    }
-}
+struct Config {}
 
 #[derive(Debug)]
 enum Error {
@@ -47,7 +37,7 @@ impl Error {
 
 fn run() -> Result<(), Error> {
     let mut args = env::args_os().skip(1);
-    let config: Config = match args.next() {
+    let _config: Config = match args.next() {
         None => Config::default(),
         Some(flag) if flag == "--config" => {
             let path = args.next().ok_or(Error::InvalidArguments)?;
@@ -67,9 +57,6 @@ fn run() -> Result<(), Error> {
         }
         Some(_) => return Err(Error::InvalidArguments),
     };
-    if !(1..=30).contains(&config.shutdown_timeout_secs) {
-        return Err(Error::InvalidConfig);
-    }
     let mut signals = Signals::new([SIGINT, SIGTERM]).map_err(|_| Error::SignalSetupFailed)?;
     let (sender, receiver) = mpsc::channel();
     let signal_sender = sender.clone();
