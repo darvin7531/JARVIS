@@ -83,11 +83,18 @@ fn backup_restores_a_consistent_workspace() {
         title: "snapshot".into(),
     };
     let mut store = SqliteStore::open(&source).unwrap();
-    store.create_task(&task, "created", &[]).unwrap();
+    store
+        .create_task(&task, "created", &["backup-ref".into()])
+        .unwrap();
     store.backup(&restored).unwrap();
+    assert!(store.backup(&restored).is_err());
+    store.append_event("backup-task", "after-snapshot").unwrap();
     drop(store);
     let restored_store = SqliteStore::open(&restored).unwrap();
     assert_eq!(restored_store.task("backup-task").unwrap(), Some(task));
+    assert_eq!(restored_store.events("backup-task").unwrap(), ["created"]);
+    let port: &dyn jarvis::storage::TaskStore = &restored_store;
+    assert_eq!(port.read_evidence("backup-task").unwrap(), ["backup-ref"]);
     drop(restored_store);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -294,5 +301,34 @@ fn migrates_v1_database_forward_without_losing_records() {
         .unwrap();
     assert_eq!(version, 2);
     drop(db);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn failed_audit_write_rolls_back_task_update() {
+    let dir = std::env::temp_dir().join(format!("jarvis-update-rollback-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut store = SqliteStore::open(&dir).unwrap();
+    let original = Task {
+        id: "task".into(),
+        version: 1,
+        title: "original".into(),
+    };
+    store.create_task(&original, "created", &[]).unwrap();
+    let db = rusqlite::Connection::open(dir.join("jarvis.sqlite3")).unwrap();
+    db.execute_batch(
+        "CREATE TRIGGER fail_update BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT, 'fail'); END;",
+    )
+    .unwrap();
+    let changed = Task {
+        id: "task".into(),
+        version: 2,
+        title: "changed".into(),
+    };
+    assert!(store.update_task(&changed, "updated").is_err());
+    assert_eq!(store.task("task").unwrap(), Some(original));
+    assert_eq!(store.events("task").unwrap(), ["created"]);
+    drop(db);
+    drop(store);
     std::fs::remove_dir_all(dir).unwrap();
 }
