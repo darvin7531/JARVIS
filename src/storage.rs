@@ -36,7 +36,7 @@ impl SqliteStore {
         db.execute_batch("PRAGMA foreign_keys = ON;")?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if !(0..=1).contains(&version) {
+        if !(0..=2).contains(&version) {
             return Err(StorageError);
         }
         if version == 0 {
@@ -49,6 +49,9 @@ impl SqliteStore {
                 return Err(StorageError);
             }
             tx.execute_batch("CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, version INTEGER NOT NULL, title TEXT NOT NULL); CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), event TEXT NOT NULL); CREATE TABLE IF NOT EXISTS evidence (task_id TEXT NOT NULL REFERENCES tasks(id), reference TEXT NOT NULL); PRAGMA user_version = 1;")?;
+        }
+        if version < 2 {
+            tx.execute_batch("CREATE INDEX events_task_id ON events(task_id, id); CREATE INDEX evidence_task_id ON evidence(task_id); PRAGMA user_version = 2;")?;
         }
         tx.commit()?;
         Ok(Self { db })
