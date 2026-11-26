@@ -163,3 +163,22 @@ fn corrupt_database_fails_without_exposing_path() {
     assert!(!format!("{err:?}").contains("secret"));
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn task_can_be_read_through_storage_port() {
+    fn read(store: &dyn jarvis::storage::TaskStore, id: &str) -> Option<Task> {
+        store.read_task(id).unwrap()
+    }
+    let dir = std::env::temp_dir().join(format!("jarvis-port-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut store = SqliteStore::open(&dir).unwrap();
+    let task = Task {
+        id: "port".into(),
+        version: 1,
+        title: "test".into(),
+    };
+    store.create_task(&task, "created", &[]).unwrap();
+    assert_eq!(read(&store, "port"), Some(task));
+    drop(store);
+    std::fs::remove_dir_all(dir).unwrap();
+}
