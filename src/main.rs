@@ -1,14 +1,18 @@
 use jarvis::{Event, Lifecycle};
 use serde::Deserialize;
-use std::{
-    env, fs, io,
-    process::ExitCode,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
-    time::Duration,
+use signal_hook::{
+    consts::signal::{SIGINT, SIGTERM},
+    iterator::Signals,
 };
+use std::{
+    env,
+    fs::File,
+    io::{self, Read},
+    process::ExitCode,
+    sync::mpsc,
+};
+
+const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -24,34 +28,10 @@ impl Default for Config {
     }
 }
 
-static SHUTDOWN: AtomicBool = AtomicBool::new(false);
-
-extern "C" fn handle_signal(_: i32) {
-    SHUTDOWN.store(true, Ordering::Relaxed);
-}
-
-#[cfg(target_os = "linux")]
-fn install_signals() -> Result<(), Error> {
-    unsafe extern "C" {
-        fn signal(sig: i32, handler: usize) -> usize;
-    }
-    // Linux SIGINT and SIGTERM; handler only performs a lock-free atomic store.
-    for sig in [2, 15] {
-        if unsafe { signal(sig, handle_signal as usize) } == usize::MAX {
-            return Err(Error::SignalSetupFailed);
-        }
-    }
-    Ok(())
-}
-
-#[cfg(not(target_os = "linux"))]
-compile_error!("Signal handling currently supports Linux only");
-
 #[derive(Debug)]
 enum Error {
     InvalidArguments,
     InvalidConfig,
-    StdinReadFailed,
     SignalSetupFailed,
 }
 
@@ -60,7 +40,6 @@ impl Error {
         match self {
             Self::InvalidArguments => "invalid_arguments",
             Self::InvalidConfig => "invalid_config",
-            Self::StdinReadFailed => "stdin_read_failed",
             Self::SignalSetupFailed => "signal_setup_failed",
         }
     }
@@ -75,7 +54,15 @@ fn run() -> Result<(), Error> {
             if args.next().is_some() {
                 return Err(Error::InvalidArguments);
             }
-            let data = fs::read(path).map_err(|_| Error::InvalidConfig)?;
+            let mut data = Vec::new();
+            File::open(path)
+                .map_err(|_| Error::InvalidConfig)?
+                .take(MAX_CONFIG_BYTES + 1)
+                .read_to_end(&mut data)
+                .map_err(|_| Error::InvalidConfig)?;
+            if data.len() as u64 > MAX_CONFIG_BYTES {
+                return Err(Error::InvalidConfig);
+            }
             serde_json::from_slice(&data).map_err(|_| Error::InvalidConfig)?
         }
         Some(_) => return Err(Error::InvalidArguments),
@@ -83,7 +70,27 @@ fn run() -> Result<(), Error> {
     if !(1..=30).contains(&config.shutdown_timeout_secs) {
         return Err(Error::InvalidConfig);
     }
-    install_signals()?;
+    let mut signals = Signals::new([SIGINT, SIGTERM]).map_err(|_| Error::SignalSetupFailed)?;
+    let (sender, receiver) = mpsc::channel();
+    let signal_sender = sender.clone();
+    std::thread::spawn(move || {
+        if signals.forever().next().is_some() {
+            let _ = signal_sender.send(());
+        }
+    });
+    std::thread::spawn(move || {
+        let stdin = io::stdin();
+        for byte in stdin.lock().bytes() {
+            match byte {
+                Ok(b'\n') => {
+                    let _ = sender.send(());
+                    break;
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+    });
     println!(
         "{}",
         serde_json::to_string(&Event {
@@ -91,21 +98,7 @@ fn run() -> Result<(), Error> {
         })
         .unwrap()
     );
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut line = String::new();
-        let _ = sender.send(io::stdin().read_line(&mut line));
-    });
-    while !SHUTDOWN.load(Ordering::Relaxed) {
-        match receiver.recv_timeout(Duration::from_secs(config.shutdown_timeout_secs)) {
-            Ok(result) => {
-                result.map_err(|_| Error::StdinReadFailed)?;
-                break;
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => return Err(Error::StdinReadFailed),
-        }
-    }
+    let _ = receiver.recv();
     println!(
         "{}",
         serde_json::to_string(&Event {
