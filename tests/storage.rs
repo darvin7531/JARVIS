@@ -254,3 +254,24 @@ fn updating_task_checks_version_and_records_audit_atomically() {
     drop(store);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn evidence_references_are_readable_through_port_after_reopen() {
+    let dir = std::env::temp_dir().join(format!("jarvis-refs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut store = SqliteStore::open(&dir).unwrap();
+    let task = Task {
+        id: "evidence".into(),
+        version: 1,
+        title: "test".into(),
+    };
+    store
+        .create_task(&task, "created", &["artifact:1".into()])
+        .unwrap();
+    drop(store);
+    let store = SqliteStore::open(&dir).unwrap();
+    let port: &dyn jarvis::storage::TaskStore = &store;
+    assert_eq!(port.read_evidence("evidence").unwrap(), ["artifact:1"]);
+    drop(store);
+    std::fs::remove_dir_all(dir).unwrap();
+}
