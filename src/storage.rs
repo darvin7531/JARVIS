@@ -158,6 +158,7 @@ pub trait TaskStore {
         evidence: &[String],
     ) -> Result<(), StorageError>;
     fn write_event(&mut self, task_id: &str, event: &str) -> Result<(), StorageError>;
+    fn revise_task(&mut self, task: &Task, event: &str) -> Result<(), StorageError>;
     fn read_events(&self, task_id: &str) -> Result<Vec<String>, StorageError>;
     fn read_evidence(&self, task_id: &str) -> Result<Vec<String>, StorageError>;
     fn read_task(&self, id: &str) -> Result<Option<Task>, StorageError>;
@@ -174,6 +175,9 @@ impl TaskStore for SqliteStore {
     }
     fn write_event(&mut self, task_id: &str, event: &str) -> Result<(), StorageError> {
         self.append_event(task_id, event)
+    }
+    fn revise_task(&mut self, _: &Task, _: &str) -> Result<(), StorageError> {
+        Err(StorageError)
     }
     fn read_events(&self, task_id: &str) -> Result<Vec<String>, StorageError> {
         self.events(task_id)

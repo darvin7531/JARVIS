@@ -332,3 +332,23 @@ fn failed_audit_write_rolls_back_task_update() {
     drop(store);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn versioned_update_is_available_through_storage_port() {
+    let dir = std::env::temp_dir().join(format!("jarvis-port-update-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut store = SqliteStore::open(&dir).unwrap();
+    let port: &mut dyn jarvis::storage::TaskStore = &mut store;
+    let mut task = Task {
+        id: "task".into(),
+        version: 1,
+        title: "first".into(),
+    };
+    port.write_task(&task, "created", &[]).unwrap();
+    task.version = 2;
+    task.title = "revised".into();
+    port.revise_task(&task, "updated").unwrap();
+    assert_eq!(port.read_task("task").unwrap(), Some(task));
+    drop(store);
+    std::fs::remove_dir_all(dir).unwrap();
+}
