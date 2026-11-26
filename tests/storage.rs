@@ -10,7 +10,7 @@ fn task_survives_reopen() {
         title: "first".into(),
     };
     {
-        let mut store = SqliteStore::open(&dir).unwrap();
+        let mut store = SqliteStore::create(&dir).unwrap();
         store.create_task(&task, "created", &[]).unwrap();
     }
     let store = SqliteStore::open(&dir).unwrap();
@@ -28,7 +28,7 @@ fn evidence_is_persisted_with_task_and_event() {
         title: "test".into(),
     };
     {
-        let mut store = SqliteStore::open(&dir).unwrap();
+        let mut store = SqliteStore::create(&dir).unwrap();
         store
             .create_task(&task, "created", &["evidence-1".into()])
             .unwrap();
@@ -82,7 +82,7 @@ fn backup_restores_a_consistent_workspace() {
         version: 1,
         title: "snapshot".into(),
     };
-    let mut store = SqliteStore::open(&source).unwrap();
+    let mut store = SqliteStore::create(&source).unwrap();
     store
         .create_task(&task, "created", &["backup-ref".into()])
         .unwrap();
@@ -108,7 +108,7 @@ fn audit_events_are_append_only_and_survive_reopen() {
         version: 1,
         title: "audit test".into(),
     };
-    let mut store = SqliteStore::open(&dir).unwrap();
+    let mut store = SqliteStore::create(&dir).unwrap();
     store.create_task(&task, "created", &[]).unwrap();
     store.append_event("audit", "checked").unwrap();
     drop(store);
@@ -122,7 +122,7 @@ fn audit_events_are_append_only_and_survive_reopen() {
 fn failed_event_write_rolls_back_task_creation() {
     let dir = std::env::temp_dir().join(format!("jarvis-rollback-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let mut store = SqliteStore::open(&dir).unwrap();
+    let mut store = SqliteStore::create(&dir).unwrap();
     let db = rusqlite::Connection::open(dir.join("jarvis.sqlite3")).unwrap();
     db.execute_batch(
         "CREATE TRIGGER fail_event BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT, 'fail'); END;",
@@ -144,7 +144,7 @@ fn failed_event_write_rolls_back_task_creation() {
 fn opens_existing_schema_idempotently() {
     let dir = std::env::temp_dir().join(format!("jarvis-migration-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    drop(SqliteStore::open(&dir).unwrap());
+    drop(SqliteStore::create(&dir).unwrap());
     drop(SqliteStore::open(&dir).unwrap());
     let db = rusqlite::Connection::open(dir.join("jarvis.sqlite3")).unwrap();
     let version: i64 = db
@@ -178,7 +178,7 @@ fn task_can_be_read_through_storage_port() {
     }
     let dir = std::env::temp_dir().join(format!("jarvis-port-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let mut store = SqliteStore::open(&dir).unwrap();
+    let mut store = SqliteStore::create(&dir).unwrap();
     let task = Task {
         id: "port".into(),
         version: 1,
@@ -218,7 +218,7 @@ fn rejects_unversioned_database_with_existing_tables_without_modification() {
 fn task_and_audit_writes_work_through_storage_port() {
     let dir = std::env::temp_dir().join(format!("jarvis-port-write-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let mut store = SqliteStore::open(&dir).unwrap();
+    let mut store = SqliteStore::create(&dir).unwrap();
     let port: &mut dyn jarvis::storage::TaskStore = &mut store;
     let task = Task {
         id: "written".into(),
@@ -240,7 +240,7 @@ fn task_and_audit_writes_work_through_storage_port() {
 fn updating_task_checks_version_and_records_audit_atomically() {
     let dir = std::env::temp_dir().join(format!("jarvis-revision-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let mut store = SqliteStore::open(&dir).unwrap();
+    let mut store = SqliteStore::create(&dir).unwrap();
     let initial = Task {
         id: "versioned".into(),
         version: 1,
@@ -266,7 +266,7 @@ fn updating_task_checks_version_and_records_audit_atomically() {
 fn evidence_references_are_readable_through_port_after_reopen() {
     let dir = std::env::temp_dir().join(format!("jarvis-refs-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let mut store = SqliteStore::open(&dir).unwrap();
+    let mut store = SqliteStore::create(&dir).unwrap();
     let task = Task {
         id: "evidence".into(),
         version: 1,
@@ -308,7 +308,7 @@ fn migrates_v1_database_forward_without_losing_records() {
 fn failed_audit_write_rolls_back_task_update() {
     let dir = std::env::temp_dir().join(format!("jarvis-update-rollback-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let mut store = SqliteStore::open(&dir).unwrap();
+    let mut store = SqliteStore::create(&dir).unwrap();
     let original = Task {
         id: "task".into(),
         version: 1,
@@ -337,7 +337,7 @@ fn failed_audit_write_rolls_back_task_update() {
 fn versioned_update_is_available_through_storage_port() {
     let dir = std::env::temp_dir().join(format!("jarvis-port-update-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let mut store = SqliteStore::open(&dir).unwrap();
+    let mut store = SqliteStore::create(&dir).unwrap();
     let port: &mut dyn jarvis::storage::TaskStore = &mut store;
     let mut task = Task {
         id: "task".into(),
@@ -403,7 +403,7 @@ fn failed_forward_migration_preserves_existing_version_and_data() {
 fn sqlite_failures_redact_task_values() {
     let dir = std::env::temp_dir().join(format!("jarvis-redact-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let mut store = SqliteStore::open(&dir).unwrap();
+    let mut store = SqliteStore::create(&dir).unwrap();
     let task = Task {
         id: "secret-token-value".into(),
         version: 1,
@@ -429,7 +429,7 @@ fn bundled_sqlite_supports_fts5() {
 fn audit_records_revision_and_timestamp() {
     let dir = std::env::temp_dir().join(format!("jarvis-audit-metadata-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let mut store = SqliteStore::open(&dir).unwrap();
+    let mut store = SqliteStore::create(&dir).unwrap();
     let mut task = Task {
         id: "t".into(),
         version: 1,

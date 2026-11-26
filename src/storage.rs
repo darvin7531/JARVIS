@@ -36,9 +36,30 @@ pub struct SqliteStore {
 }
 
 impl SqliteStore {
+    pub fn create(path: &Path) -> Result<Self, StorageError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|_| StorageError::OperationFailed)?;
+        }
+        std::fs::create_dir(path).map_err(|_| StorageError::OperationFailed)?;
+        let result = (|| {
+            let db = Connection::open(path.join("jarvis.sqlite3"))?;
+            Self::initialize(db, true)
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_dir_all(path);
+        }
+        result
+    }
+
     pub fn open(path: &Path) -> Result<Self, StorageError> {
-        std::fs::create_dir_all(path).map_err(|_| StorageError::OperationFailed)?;
-        let mut db = Connection::open(path.join("jarvis.sqlite3"))?;
+        let db = Connection::open_with_flags(
+            path.join("jarvis.sqlite3"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
+        )?;
+        Self::initialize(db, false)
+    }
+
+    fn initialize(mut db: Connection, creating: bool) -> Result<Self, StorageError> {
         db.execute_batch("PRAGMA foreign_keys = ON;")?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -46,6 +67,9 @@ impl SqliteStore {
             return Err(StorageError::UnsupportedSchema);
         }
         if version == 0 {
+            if !creating {
+                return Err(StorageError::UnsupportedSchema);
+            }
             let objects: i64 = tx.query_row(
                 "SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'",
                 [],
