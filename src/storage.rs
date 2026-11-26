@@ -31,6 +31,34 @@ impl From<rusqlite::Error> for StorageError {
     }
 }
 
+fn validate_schema(db: &Connection, version: i64) -> Result<(), StorageError> {
+    let expected = Connection::open_in_memory()?;
+    expected.execute_batch("CREATE TABLE tasks (id TEXT PRIMARY KEY, version INTEGER NOT NULL, title TEXT NOT NULL); CREATE TABLE events (id INTEGER PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), event TEXT NOT NULL); CREATE TABLE evidence (task_id TEXT NOT NULL REFERENCES tasks(id), reference TEXT NOT NULL);")?;
+    if version >= 2 {
+        expected.execute_batch("CREATE INDEX events_task_id ON events(task_id, id); CREATE INDEX evidence_task_id ON evidence(task_id);")?;
+    }
+    if version >= 3 {
+        expected.execute_batch("ALTER TABLE events ADD COLUMN revision INTEGER; ALTER TABLE events ADD COLUMN occurred_at TEXT;")?;
+    }
+    fn definitions(db: &Connection) -> Result<Vec<(String, String)>, StorageError> {
+        let mut query = db.prepare("SELECT name, sql FROM sqlite_schema WHERE type IN ('table', 'index') AND name NOT LIKE 'sqlite_%' ORDER BY name")?;
+        let definitions = query
+            .query_map([], |row| {
+                let sql: String = row.get(1)?;
+                Ok((
+                    row.get(0)?,
+                    sql.split_whitespace().collect::<String>().to_lowercase(),
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(definitions)
+    }
+    if definitions(db)? != definitions(&expected)? {
+        return Err(StorageError::UnsupportedSchema);
+    }
+    Ok(())
+}
+
 pub struct SqliteStore {
     db: Connection,
 }
@@ -65,6 +93,9 @@ impl SqliteStore {
         let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if !(0..=3).contains(&version) {
             return Err(StorageError::UnsupportedSchema);
+        }
+        if version > 0 {
+            validate_schema(&tx, version)?;
         }
         if version == 0 {
             if !creating {
