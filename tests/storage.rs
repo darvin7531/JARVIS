@@ -63,7 +63,9 @@ fn rejects_unknown_future_schema_without_changing_it() {
     drop(db);
     assert!(SqliteStore::open(&dir).is_err());
     let db = rusqlite::Connection::open(path).unwrap();
-    let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+    let version: i64 = db
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
     assert_eq!(version, 999);
     drop(db);
     std::fs::remove_dir_all(dir).unwrap();
