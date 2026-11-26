@@ -67,7 +67,8 @@ fn valid_config_starts_and_handles_sigterm() {
 
 #[test]
 fn invalid_values_and_malformed_input_are_redacted() {
-    let path = std::env::temp_dir().join(format!("jarvis-sensitive-path-{}.json", std::process::id()));
+    let path =
+        std::env::temp_dir().join(format!("jarvis-sensitive-path-{}.json", std::process::id()));
     for input in [
         r#"{"shutdown_timeout_secs":0}"#,
         r#"{"shutdown_timeout_secs":31}"#,
