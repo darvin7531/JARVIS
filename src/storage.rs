@@ -71,12 +71,22 @@ impl SqliteStore {
         Ok(())
     }
 
-    pub fn append_event(&mut self, _: &str, _: &str) -> Result<(), StorageError> {
+    pub fn append_event(&mut self, task_id: &str, event: &str) -> Result<(), StorageError> {
+        self.db.execute(
+            "INSERT INTO events (task_id, event) VALUES (?1, ?2)",
+            params![task_id, event],
+        )?;
         Ok(())
     }
 
-    pub fn events(&self, _: &str) -> Result<Vec<String>, StorageError> {
-        Ok(Vec::new())
+    pub fn events(&self, task_id: &str) -> Result<Vec<String>, StorageError> {
+        let mut statement = self.db.prepare(
+            "SELECT event FROM events WHERE task_id = ?1 ORDER BY id",
+        )?;
+        let events = statement
+            .query_map([task_id], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(events)
     }
 
     pub fn backup(&self, path: &Path) -> Result<(), StorageError> {
