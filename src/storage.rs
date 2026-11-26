@@ -68,7 +68,11 @@ impl SqliteStore {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|_| StorageError::OperationFailed)?;
         }
-        std::fs::create_dir(path).map_err(|_| StorageError::OperationFailed)?;
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(path)
+            .map_err(|_| StorageError::OperationFailed)?;
         let result = (|| {
             let db = Connection::open(path.join("jarvis.sqlite3"))?;
             Self::initialize(db, true)
