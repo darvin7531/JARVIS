@@ -175,8 +175,14 @@ impl TaskStore for SqliteStore {
     fn read_events(&self, task_id: &str) -> Result<Vec<String>, StorageError> {
         self.events(task_id)
     }
-    fn read_evidence(&self, _: &str) -> Result<Vec<String>, StorageError> {
-        Ok(Vec::new())
+    fn read_evidence(&self, task_id: &str) -> Result<Vec<String>, StorageError> {
+        let mut statement = self
+            .db
+            .prepare("SELECT reference FROM evidence WHERE task_id = ?1 ORDER BY rowid")?;
+        let references = statement
+            .query_map([task_id], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(references)
     }
     fn read_task(&self, id: &str) -> Result<Option<Task>, StorageError> {
         self.task(id)
