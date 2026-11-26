@@ -51,3 +51,20 @@ fn evidence_is_persisted_with_task_and_event() {
     drop(db);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn rejects_unknown_future_schema_without_changing_it() {
+    let dir = std::env::temp_dir().join(format!("jarvis-version-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("jarvis.sqlite3");
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.pragma_update(None, "user_version", 999).unwrap();
+    drop(db);
+    assert!(SqliteStore::open(&dir).is_err());
+    let db = rusqlite::Connection::open(path).unwrap();
+    let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+    assert_eq!(version, 999);
+    drop(db);
+    std::fs::remove_dir_all(dir).unwrap();
+}
