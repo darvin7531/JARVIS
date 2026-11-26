@@ -189,15 +189,55 @@ impl SqliteStore {
     }
 
     pub fn backup(&self, path: &Path) -> Result<(), StorageError> {
-        std::fs::create_dir(path).map_err(|_| StorageError::OperationFailed)?;
+        use std::os::unix::{ffi::OsStrExt, fs::DirBuilderExt};
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let parent = path.parent().ok_or(StorageError::OperationFailed)?;
+        let temporary = parent.join(format!(
+            ".jarvis-backup-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&temporary)
+            .map_err(|_| StorageError::OperationFailed)?;
         let result = (|| {
-            let mut destination = Connection::open(path.join("jarvis.sqlite3"))?;
-            let backup = rusqlite::backup::Backup::new(&self.db, &mut destination)?;
-            backup.run_to_completion(100, std::time::Duration::from_millis(10), None)?;
+            {
+                let mut destination = Connection::open(temporary.join("jarvis.sqlite3"))?;
+                let backup = rusqlite::backup::Backup::new(&self.db, &mut destination)?;
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+                loop {
+                    match backup.step(100)? {
+                        rusqlite::backup::StepResult::Done => break,
+                        _ if std::time::Instant::now() >= deadline => {
+                            return Err(StorageError::OperationFailed);
+                        }
+                        _ => std::thread::sleep(std::time::Duration::from_millis(10)),
+                    }
+                }
+            }
+            let from = std::ffi::CString::new(temporary.as_os_str().as_bytes())
+                .map_err(|_| StorageError::OperationFailed)?;
+            let to = std::ffi::CString::new(path.as_os_str().as_bytes())
+                .map_err(|_| StorageError::OperationFailed)?;
+            unsafe extern "C" {
+                fn renameat2(
+                    olddirfd: i32,
+                    oldpath: *const i8,
+                    newdirfd: i32,
+                    newpath: *const i8,
+                    flags: u32,
+                ) -> i32;
+            }
+            // RENAME_NOREPLACE publishes the completed directory without replacing a workspace.
+            if unsafe { renameat2(-100, from.as_ptr(), -100, to.as_ptr(), 1) } != 0 {
+                return Err(StorageError::OperationFailed);
+            }
             Ok(())
         })();
         if result.is_err() {
-            let _ = std::fs::remove_dir_all(path);
+            let _ = std::fs::remove_dir_all(&temporary);
         }
         result
     }
