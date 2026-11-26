@@ -19,3 +19,20 @@ fn starts_without_credentials_and_shuts_down_on_stdin() {
     assert!(line.contains("stopped"), "{line}");
     assert!(child.wait().unwrap().success());
 }
+
+#[test]
+fn invalid_config_is_rejected_without_disclosing_contents() {
+    let path = std::env::temp_dir().join(format!("jarvis-invalid-{}.json", std::process::id()));
+    std::fs::write(&path, r#"{"secret":"sensitive-value"}"#).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_jarvis"))
+        .arg("--config")
+        .arg(&path)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    std::fs::remove_file(path).unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("invalid_config"), "{stderr}");
+    assert!(!stderr.contains("sensitive-value"));
+}
