@@ -9,11 +9,17 @@ pub struct Task {
 }
 
 #[derive(Debug)]
-pub struct StorageError;
+pub enum StorageError {
+    OperationFailed,
+    UnsupportedSchema,
+}
 
 impl fmt::Display for StorageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("storage operation failed")
+        f.write_str(match self {
+            Self::OperationFailed => "storage operation failed",
+            Self::UnsupportedSchema => "unsupported schema version",
+        })
     }
 }
 
@@ -21,7 +27,7 @@ impl std::error::Error for StorageError {}
 
 impl From<rusqlite::Error> for StorageError {
     fn from(_: rusqlite::Error) -> Self {
-        Self
+        Self::OperationFailed
     }
 }
 
@@ -31,13 +37,13 @@ pub struct SqliteStore {
 
 impl SqliteStore {
     pub fn open(path: &Path) -> Result<Self, StorageError> {
-        std::fs::create_dir_all(path).map_err(|_| StorageError)?;
+        std::fs::create_dir_all(path).map_err(|_| StorageError::OperationFailed)?;
         let mut db = Connection::open(path.join("jarvis.sqlite3"))?;
         db.execute_batch("PRAGMA foreign_keys = ON;")?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if !(0..=2).contains(&version) {
-            return Err(StorageError);
+            return Err(StorageError::UnsupportedSchema);
         }
         if version == 0 {
             let objects: i64 = tx.query_row(
@@ -46,7 +52,7 @@ impl SqliteStore {
                 |row| row.get(0),
             )?;
             if objects != 0 {
-                return Err(StorageError);
+                return Err(StorageError::OperationFailed);
             }
             tx.execute_batch("CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, version INTEGER NOT NULL, title TEXT NOT NULL); CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), event TEXT NOT NULL); CREATE TABLE IF NOT EXISTS evidence (task_id TEXT NOT NULL REFERENCES tasks(id), reference TEXT NOT NULL); PRAGMA user_version = 1;")?;
         }
@@ -83,14 +89,14 @@ impl SqliteStore {
     }
 
     pub fn update_task(&mut self, task: &Task, event: &str) -> Result<(), StorageError> {
-        let previous = task.version.checked_sub(1).ok_or(StorageError)?;
+        let previous = task.version.checked_sub(1).ok_or(StorageError::OperationFailed)?;
         let tx = self.db.transaction()?;
         let changed = tx.execute(
             "UPDATE tasks SET version = ?1, title = ?2 WHERE id = ?3 AND version = ?4",
             params![task.version, task.title, task.id, previous],
         )?;
         if changed != 1 {
-            return Err(StorageError);
+            return Err(StorageError::OperationFailed);
         }
         tx.execute(
             "INSERT INTO events (task_id, event) VALUES (?1, ?2)",
@@ -119,7 +125,7 @@ impl SqliteStore {
     }
 
     pub fn backup(&self, path: &Path) -> Result<(), StorageError> {
-        std::fs::create_dir(path).map_err(|_| StorageError)?;
+        std::fs::create_dir(path).map_err(|_| StorageError::OperationFailed)?;
         let result = (|| {
             let mut destination = Connection::open(path.join("jarvis.sqlite3"))?;
             let backup = rusqlite::backup::Backup::new(&self.db, &mut destination)?;
