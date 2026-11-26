@@ -4,7 +4,11 @@ use jarvis::storage::{SqliteStore, Task};
 fn task_survives_reopen() {
     let dir = std::env::temp_dir().join(format!("jarvis-r02-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let task = Task { id: "task-1".into(), version: 1, title: "first".into() };
+    let task = Task {
+        id: "task-1".into(),
+        version: 1,
+        title: "first".into(),
+    };
     {
         let mut store = SqliteStore::open(&dir).unwrap();
         store.create_task(&task, "created", &[]).unwrap();
