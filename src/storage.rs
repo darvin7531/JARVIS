@@ -40,6 +40,14 @@ impl SqliteStore {
             return Err(StorageError);
         }
         if version == 0 {
+            let objects: i64 = tx.query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'",
+                [],
+                |row| row.get(0),
+            )?;
+            if objects != 0 {
+                return Err(StorageError);
+            }
             tx.execute_batch("CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, version INTEGER NOT NULL, title TEXT NOT NULL); CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), event TEXT NOT NULL); CREATE TABLE IF NOT EXISTS evidence (task_id TEXT NOT NULL REFERENCES tasks(id), reference TEXT NOT NULL); PRAGMA user_version = 1;")?;
         }
         tx.commit()?;
