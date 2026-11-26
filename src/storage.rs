@@ -79,8 +79,22 @@ impl SqliteStore {
         Ok(())
     }
 
-    pub fn update_task(&mut self, _: &Task, _: &str) -> Result<(), StorageError> {
-        Err(StorageError)
+    pub fn update_task(&mut self, task: &Task, event: &str) -> Result<(), StorageError> {
+        let previous = task.version.checked_sub(1).ok_or(StorageError)?;
+        let tx = self.db.transaction()?;
+        let changed = tx.execute(
+            "UPDATE tasks SET version = ?1, title = ?2 WHERE id = ?3 AND version = ?4",
+            params![task.version, task.title, task.id, previous],
+        )?;
+        if changed != 1 {
+            return Err(StorageError);
+        }
+        tx.execute(
+            "INSERT INTO events (task_id, event) VALUES (?1, ?2)",
+            params![task.id, event],
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn append_event(&mut self, task_id: &str, event: &str) -> Result<(), StorageError> {
