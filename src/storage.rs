@@ -57,8 +57,19 @@ impl SqliteStore {
     }
 
     pub fn task(&self, id: &str) -> Result<Option<Task>, StorageError> {
-        Ok(self.db.query_row("SELECT id, version, title FROM tasks WHERE id = ?1", [id], |row| {
-            Ok(Task { id: row.get(0)?, version: row.get(1)?, title: row.get(2)? })
-        }).optional()?)
+        Ok(self
+            .db
+            .query_row(
+                "SELECT id, version, title FROM tasks WHERE id = ?1",
+                [id],
+                |row| {
+                    Ok(Task {
+                        id: row.get(0)?,
+                        version: row.get(1)?,
+                        title: row.get(2)?,
+                    })
+                },
+            )
+            .optional()?)
     }
 }
