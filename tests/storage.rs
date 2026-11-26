@@ -221,7 +221,10 @@ fn task_and_audit_writes_work_through_storage_port() {
     port.write_task(&task, "created", &[]).unwrap();
     port.write_event("written", "reviewed").unwrap();
     assert_eq!(port.read_task("written").unwrap(), Some(task));
-    assert_eq!(port.read_events("written").unwrap(), ["created", "reviewed"]);
+    assert_eq!(
+        port.read_events("written").unwrap(),
+        ["created", "reviewed"]
+    );
     drop(store);
     std::fs::remove_dir_all(dir).unwrap();
 }

@@ -130,7 +130,12 @@ impl SqliteStore {
 }
 
 pub trait TaskStore {
-    fn write_task(&mut self, task: &Task, event: &str, evidence: &[String]) -> Result<(), StorageError>;
+    fn write_task(
+        &mut self,
+        task: &Task,
+        event: &str,
+        evidence: &[String],
+    ) -> Result<(), StorageError>;
     fn write_event(&mut self, task_id: &str, event: &str) -> Result<(), StorageError>;
     fn read_events(&self, task_id: &str) -> Result<Vec<String>, StorageError>;
     fn read_task(&self, id: &str) -> Result<Option<Task>, StorageError>;
