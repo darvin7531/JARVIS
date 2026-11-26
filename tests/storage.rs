@@ -1,5 +1,10 @@
 use jarvis::storage::{SqliteStore, Task};
 
+fn private_dir(path: &std::path::Path) {
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new().mode(0o700).create(path).unwrap();
+}
+
 #[test]
 fn task_survives_reopen() {
     let dir = std::env::temp_dir().join(format!("jarvis-r02-{}", std::process::id()));
@@ -56,7 +61,7 @@ fn evidence_is_persisted_with_task_and_event() {
 fn rejects_unknown_future_schema_without_changing_it() {
     let dir = std::env::temp_dir().join(format!("jarvis-version-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    private_dir(&dir);
     let path = dir.join("jarvis.sqlite3");
     let db = rusqlite::Connection::open(&path).unwrap();
     db.pragma_update(None, "user_version", 999).unwrap();
@@ -159,7 +164,7 @@ fn opens_existing_schema_idempotently() {
 fn corrupt_database_fails_without_exposing_path() {
     let root = std::env::temp_dir().join(format!("jarvis-secret-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
+    private_dir(&root);
     std::fs::write(root.join("jarvis.sqlite3"), b"not a sqlite database").unwrap();
     let result = SqliteStore::open(&root);
     let err = match result {
@@ -194,7 +199,7 @@ fn task_can_be_read_through_storage_port() {
 fn rejects_unversioned_database_with_existing_tables_without_modification() {
     let dir = std::env::temp_dir().join(format!("jarvis-foreign-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    private_dir(&dir);
     let path = dir.join("jarvis.sqlite3");
     let db = rusqlite::Connection::open(&path).unwrap();
     db.execute_batch("CREATE TABLE tasks (unexpected TEXT);")
@@ -287,7 +292,7 @@ fn evidence_references_are_readable_through_port_after_reopen() {
 fn migrates_v1_database_forward_without_losing_records() {
     let dir = std::env::temp_dir().join(format!("jarvis-v1-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    private_dir(&dir);
     let db = rusqlite::Connection::open(dir.join("jarvis.sqlite3")).unwrap();
     db.execute_batch("CREATE TABLE tasks (id TEXT PRIMARY KEY, version INTEGER NOT NULL, title TEXT NOT NULL); CREATE TABLE events (id INTEGER PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), event TEXT NOT NULL); CREATE TABLE evidence (task_id TEXT NOT NULL REFERENCES tasks(id), reference TEXT NOT NULL); INSERT INTO tasks VALUES ('old', 1, 'preserved'); INSERT INTO events (task_id, event) VALUES ('old', 'created'); INSERT INTO evidence VALUES ('old', 'legacy'); PRAGMA user_version = 1;").unwrap();
     drop(db);
@@ -367,7 +372,7 @@ fn versioned_update_is_available_through_storage_port() {
 fn unsupported_schema_has_a_distinct_redacted_error() {
     let dir = std::env::temp_dir().join(format!("jarvis-unsupported-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    private_dir(&dir);
     let db = rusqlite::Connection::open(dir.join("jarvis.sqlite3")).unwrap();
     db.pragma_update(None, "user_version", 999).unwrap();
     drop(db);
@@ -384,7 +389,7 @@ fn unsupported_schema_has_a_distinct_redacted_error() {
 fn failed_forward_migration_preserves_existing_version_and_data() {
     let dir = std::env::temp_dir().join(format!("jarvis-failed-migration-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    private_dir(&dir);
     let path = dir.join("jarvis.sqlite3");
     let db = rusqlite::Connection::open(&path).unwrap();
     db.execute_batch("CREATE TABLE tasks (id TEXT PRIMARY KEY, version INTEGER NOT NULL, title TEXT NOT NULL); CREATE TABLE events (id INTEGER PRIMARY KEY, task_id TEXT NOT NULL, event TEXT NOT NULL); INSERT INTO tasks VALUES ('keep', 1, 'data'); PRAGMA user_version = 1;").unwrap();
@@ -470,7 +475,7 @@ fn audit_records_revision_and_timestamp() {
 fn opening_a_workspace_with_missing_database_must_not_create_one() {
     let dir = std::env::temp_dir().join(format!("jarvis-missing-db-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    private_dir(&dir);
     assert!(SqliteStore::open(&dir).is_err());
     assert!(!dir.join("jarvis.sqlite3").exists());
     std::fs::remove_dir_all(dir).unwrap();
@@ -480,7 +485,7 @@ fn opening_a_workspace_with_missing_database_must_not_create_one() {
 fn rejects_forged_known_schema_without_modification() {
     let dir = std::env::temp_dir().join(format!("jarvis-forged-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    private_dir(&dir);
     let path = dir.join("jarvis.sqlite3");
     let db = rusqlite::Connection::open(&path).unwrap();
     db.execute_batch("CREATE TABLE tasks (id TEXT PRIMARY KEY, version INTEGER NOT NULL, title TEXT NOT NULL); CREATE TABLE events (id INTEGER PRIMARY KEY, task_id TEXT NOT NULL, event TEXT NOT NULL); CREATE TABLE evidence (task_id TEXT NOT NULL, reference TEXT NOT NULL); PRAGMA user_version = 1;").unwrap();

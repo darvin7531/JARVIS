@@ -59,7 +59,9 @@ fn validate_schema(db: &Connection, version: i64) -> Result<(), StorageError> {
         expected.execute_batch("ALTER TABLE evidence ADD COLUMN provenance TEXT; ALTER TABLE evidence ADD COLUMN observed_at TEXT; ALTER TABLE evidence ADD COLUMN classification TEXT;")?;
     }
     fn definitions(db: &Connection) -> Result<Vec<(String, String)>, StorageError> {
-        let mut query = db.prepare("SELECT name, sql FROM sqlite_schema WHERE type IN ('table', 'index') AND name NOT LIKE 'sqlite_%' ORDER BY name")?;
+        let mut query = db.prepare(
+            "SELECT name, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY name",
+        )?;
         let definitions = query
             .query_map([], |row| {
                 let sql: String = row.get(1)?;
@@ -102,6 +104,17 @@ impl SqliteStore {
     }
 
     pub fn open(path: &Path) -> Result<Self, StorageError> {
+        use std::os::unix::fs::PermissionsExt;
+        let metadata =
+            std::fs::symlink_metadata(path).map_err(|_| StorageError::OperationFailed)?;
+        if !metadata.is_dir() || metadata.permissions().mode() & 0o077 != 0 {
+            return Err(StorageError::OperationFailed);
+        }
+        let db_metadata = std::fs::symlink_metadata(path.join("jarvis.sqlite3"))
+            .map_err(|_| StorageError::OperationFailed)?;
+        if !db_metadata.is_file() {
+            return Err(StorageError::OperationFailed);
+        }
         let db = Connection::open_with_flags(
             path.join("jarvis.sqlite3"),
             rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
@@ -110,6 +123,7 @@ impl SqliteStore {
     }
 
     fn initialize(mut db: Connection, creating: bool) -> Result<Self, StorageError> {
+        db.busy_timeout(std::time::Duration::from_millis(100))?;
         db.execute_batch("PRAGMA foreign_keys = ON;")?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -118,6 +132,15 @@ impl SqliteStore {
         }
         if version > 0 {
             validate_schema(&tx, version)?;
+            let integrity: String = tx.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+            let foreign_key_error = tx
+                .prepare("PRAGMA foreign_key_check")?
+                .query([])?
+                .next()?
+                .is_some();
+            if integrity != "ok" || foreign_key_error {
+                return Err(StorageError::OperationFailed);
+            }
         }
         if version == 0 {
             if !creating {
@@ -277,6 +300,7 @@ impl SqliteStore {
         let result = (|| {
             {
                 let mut destination = Connection::open(temporary.join("jarvis.sqlite3"))?;
+                destination.busy_timeout(std::time::Duration::from_millis(100))?;
                 let backup = rusqlite::backup::Backup::new(&self.db, &mut destination)?;
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
                 loop {
