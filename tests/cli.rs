@@ -118,5 +118,8 @@ fn sigterm_is_prompt_even_with_long_timeout() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     };
     std::fs::remove_file(path).unwrap();
-    assert!(status.is_some_and(|status| status.success()), "shutdown timed out or failed");
+    assert!(
+        status.is_some_and(|status| status.success()),
+        "shutdown timed out or failed"
+    );
 }
