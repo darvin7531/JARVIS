@@ -8,6 +8,21 @@ pub struct Task {
     pub title: String,
 }
 
+#[derive(Debug, PartialEq)]
+pub struct Evidence {
+    pub reference: String,
+    pub provenance: Option<String>,
+    pub observed_at: Option<String>,
+    pub classification: Option<String>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct AuditEvent {
+    pub event: String,
+    pub revision: Option<i64>,
+    pub occurred_at: Option<String>,
+}
+
 #[derive(Debug)]
 pub enum StorageError {
     OperationFailed,
@@ -137,6 +152,24 @@ impl SqliteStore {
         event: &str,
         evidence: &[String],
     ) -> Result<(), StorageError> {
+        let evidence = evidence
+            .iter()
+            .map(|reference| Evidence {
+                reference: reference.clone(),
+                provenance: None,
+                observed_at: None,
+                classification: None,
+            })
+            .collect::<Vec<_>>();
+        self.create_task_with_evidence(task, event, &evidence)
+    }
+
+    pub fn create_task_with_evidence(
+        &mut self,
+        task: &Task,
+        event: &str,
+        evidence: &[Evidence],
+    ) -> Result<(), StorageError> {
         let tx = self.db.transaction()?;
         tx.execute(
             "INSERT INTO tasks (id, version, title) VALUES (?1, ?2, ?3)",
@@ -146,14 +179,43 @@ impl SqliteStore {
             "INSERT INTO events (task_id, event, revision, occurred_at) VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
             params![task.id, event, task.version],
         )?;
-        for reference in evidence {
+        for item in evidence {
             tx.execute(
-                "INSERT INTO evidence (task_id, reference) VALUES (?1, ?2)",
-                params![task.id, reference],
+                "INSERT INTO evidence (task_id, reference, provenance, observed_at, classification) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![task.id, item.reference, item.provenance, item.observed_at, item.classification],
             )?;
         }
         tx.commit()?;
         Ok(())
+    }
+
+    pub fn evidence_metadata(&self, task_id: &str) -> Result<Vec<Evidence>, StorageError> {
+        let mut statement = self.db.prepare(
+            "SELECT reference, provenance, observed_at, classification FROM evidence WHERE task_id = ?1 ORDER BY rowid",
+        )?;
+        let rows = statement.query_map([task_id], |row| {
+            Ok(Evidence {
+                reference: row.get(0)?,
+                provenance: row.get(1)?,
+                observed_at: row.get(2)?,
+                classification: row.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn audit_metadata(&self, task_id: &str) -> Result<Vec<AuditEvent>, StorageError> {
+        let mut statement = self.db.prepare(
+            "SELECT event, revision, occurred_at FROM events WHERE task_id = ?1 ORDER BY id",
+        )?;
+        let rows = statement.query_map([task_id], |row| {
+            Ok(AuditEvent {
+                event: row.get(0)?,
+                revision: row.get(1)?,
+                occurred_at: row.get(2)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
     pub fn update_task(&mut self, task: &Task, event: &str) -> Result<(), StorageError> {
@@ -282,9 +344,32 @@ pub trait TaskStore {
     fn read_events(&self, task_id: &str) -> Result<Vec<String>, StorageError>;
     fn read_evidence(&self, task_id: &str) -> Result<Vec<String>, StorageError>;
     fn read_task(&self, id: &str) -> Result<Option<Task>, StorageError>;
+    fn write_task_with_evidence(
+        &mut self,
+        task: &Task,
+        event: &str,
+        evidence: &[Evidence],
+    ) -> Result<(), StorageError>;
+    fn read_evidence_metadata(&self, task_id: &str) -> Result<Vec<Evidence>, StorageError>;
+    fn read_audit_metadata(&self, task_id: &str) -> Result<Vec<AuditEvent>, StorageError>;
 }
 
 impl TaskStore for SqliteStore {
+    fn write_task_with_evidence(
+        &mut self,
+        task: &Task,
+        event: &str,
+        evidence: &[Evidence],
+    ) -> Result<(), StorageError> {
+        self.create_task_with_evidence(task, event, evidence)
+    }
+    fn read_evidence_metadata(&self, task_id: &str) -> Result<Vec<Evidence>, StorageError> {
+        self.evidence_metadata(task_id)
+    }
+    fn read_audit_metadata(&self, task_id: &str) -> Result<Vec<AuditEvent>, StorageError> {
+        self.audit_metadata(task_id)
+    }
+
     fn write_task(
         &mut self,
         task: &Task,

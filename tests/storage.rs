@@ -289,11 +289,21 @@ fn migrates_v1_database_forward_without_losing_records() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let db = rusqlite::Connection::open(dir.join("jarvis.sqlite3")).unwrap();
-    db.execute_batch("CREATE TABLE tasks (id TEXT PRIMARY KEY, version INTEGER NOT NULL, title TEXT NOT NULL); CREATE TABLE events (id INTEGER PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), event TEXT NOT NULL); CREATE TABLE evidence (task_id TEXT NOT NULL REFERENCES tasks(id), reference TEXT NOT NULL); INSERT INTO tasks VALUES ('old', 1, 'preserved'); INSERT INTO events (task_id, event) VALUES ('old', 'created'); PRAGMA user_version = 1;").unwrap();
+    db.execute_batch("CREATE TABLE tasks (id TEXT PRIMARY KEY, version INTEGER NOT NULL, title TEXT NOT NULL); CREATE TABLE events (id INTEGER PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), event TEXT NOT NULL); CREATE TABLE evidence (task_id TEXT NOT NULL REFERENCES tasks(id), reference TEXT NOT NULL); INSERT INTO tasks VALUES ('old', 1, 'preserved'); INSERT INTO events (task_id, event) VALUES ('old', 'created'); INSERT INTO evidence VALUES ('old', 'legacy'); PRAGMA user_version = 1;").unwrap();
     drop(db);
     let store = SqliteStore::open(&dir).unwrap();
     assert_eq!(store.task("old").unwrap().unwrap().title, "preserved");
     assert_eq!(store.events("old").unwrap(), ["created"]);
+    let port: &dyn jarvis::storage::TaskStore = &store;
+    let evidence = port.read_evidence_metadata("old").unwrap();
+    assert_eq!(evidence[0].reference, "legacy");
+    assert_eq!(evidence[0].provenance, None);
+    assert_eq!(evidence[0].observed_at, None);
+    assert_eq!(evidence[0].classification, None);
+    let audit = port.read_audit_metadata("old").unwrap();
+    assert_eq!(audit[0].event, "created");
+    assert_eq!(audit[0].revision, None);
+    assert_eq!(audit[0].occurred_at, None);
     drop(store);
     let db = rusqlite::Connection::open(dir.join("jarvis.sqlite3")).unwrap();
     let version: i64 = db
@@ -530,5 +540,41 @@ fn evidence_metadata_columns_exist() {
         .prepare("SELECT provenance, observed_at, classification FROM evidence")
         .is_ok());
     drop(db);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn typed_evidence_and_audit_survive_reopen_through_port() {
+    use jarvis::storage::{Evidence, TaskStore};
+    let dir = std::env::temp_dir().join(format!("jarvis-typed-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut store = SqliteStore::create(&dir).unwrap();
+    let task = Task {
+        id: "typed".into(),
+        version: 7,
+        title: "test".into(),
+    };
+    let evidence = Evidence {
+        reference: "ref".into(),
+        provenance: Some("origin".into()),
+        observed_at: Some("2026-11-26T12:00:00Z".into()),
+        classification: Some("internal".into()),
+    };
+    store
+        .write_task_with_evidence(&task, "created", &[evidence])
+        .unwrap();
+    drop(store);
+    let store = SqliteStore::open(&dir).unwrap();
+    let port: &dyn TaskStore = &store;
+    let rows = port.read_evidence_metadata("typed").unwrap();
+    assert_eq!(rows[0].reference, "ref");
+    assert_eq!(rows[0].provenance.as_deref(), Some("origin"));
+    assert_eq!(rows[0].observed_at.as_deref(), Some("2026-11-26T12:00:00Z"));
+    assert_eq!(rows[0].classification.as_deref(), Some("internal"));
+    let audit = port.read_audit_metadata("typed").unwrap();
+    assert_eq!(audit[0].event, "created");
+    assert_eq!(audit[0].revision, Some(7));
+    assert!(audit[0].occurred_at.as_deref().unwrap().ends_with('Z'));
+    drop(store);
     std::fs::remove_dir_all(dir).unwrap();
 }
