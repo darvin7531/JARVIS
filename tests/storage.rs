@@ -726,3 +726,39 @@ fn reopen_rejects_public_workspace_without_changing_permissions() {
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn invalid_evidence_metadata_is_rejected_atomically() {
+    use jarvis::storage::Evidence;
+    let dir = std::env::temp_dir().join(format!("jarvis-invalid-metadata-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut store = SqliteStore::create(&dir).unwrap();
+    let task = Task {
+        id: "metadata".into(),
+        version: 1,
+        title: "test".into(),
+    };
+    for (provenance, observed_at, classification) in [
+        (Some(""), None, None),
+        (None, Some("not-a-time"), None),
+        (None, Some("2026-02-30T12:00:00Z"), None),
+        (None, None, Some("")),
+    ] {
+        let evidence = Evidence {
+            reference: "ref".into(),
+            provenance: provenance.map(str::to_owned),
+            observed_at: observed_at.map(str::to_owned),
+            classification: classification.map(str::to_owned),
+        };
+        assert!(store
+            .create_task_with_evidence(&task, "created", &[evidence])
+            .is_err());
+        assert_eq!(store.task("metadata").unwrap(), None);
+    }
+    drop(store);
+    assert_eq!(
+        SqliteStore::open(&dir).unwrap().task("metadata").unwrap(),
+        None
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
