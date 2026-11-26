@@ -53,7 +53,11 @@ fn valid_config_starts_and_handles_sigterm() {
     let mut line = String::new();
     output.read_line(&mut line).unwrap();
     assert!(line.contains("started"), "{line}");
-    assert!(Command::new("/bin/kill").args(["-TERM", &child.id().to_string()]).status().unwrap().success());
+    assert!(Command::new("/bin/kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap()
+        .success());
     line.clear();
     output.read_line(&mut line).unwrap();
     assert!(line.contains("stopped"), "{line}");
