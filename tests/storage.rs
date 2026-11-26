@@ -91,3 +91,22 @@ fn backup_restores_a_consistent_workspace() {
     drop(restored_store);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn audit_events_are_append_only_and_survive_reopen() {
+    let dir = std::env::temp_dir().join(format!("jarvis-audit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let task = Task {
+        id: "audit".into(),
+        version: 1,
+        title: "audit test".into(),
+    };
+    let mut store = SqliteStore::open(&dir).unwrap();
+    store.create_task(&task, "created", &[]).unwrap();
+    store.append_event("audit", "checked").unwrap();
+    drop(store);
+    let store = SqliteStore::open(&dir).unwrap();
+    assert_eq!(store.events("audit").unwrap(), ["created", "checked"]);
+    drop(store);
+    std::fs::remove_dir_all(dir).unwrap();
+}

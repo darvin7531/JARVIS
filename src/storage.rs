@@ -71,6 +71,14 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub fn append_event(&mut self, _: &str, _: &str) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    pub fn events(&self, _: &str) -> Result<Vec<String>, StorageError> {
+        Ok(Vec::new())
+    }
+
     pub fn backup(&self, path: &Path) -> Result<(), StorageError> {
         std::fs::create_dir(path).map_err(|_| StorageError)?;
         let result = (|| {
