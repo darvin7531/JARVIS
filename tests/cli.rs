@@ -36,3 +36,27 @@ fn invalid_config_is_rejected_without_disclosing_contents() {
     assert!(stderr.contains("invalid_config"), "{stderr}");
     assert!(!stderr.contains("sensitive-value"));
 }
+
+#[test]
+fn valid_config_starts_and_handles_sigterm() {
+    let path = std::env::temp_dir().join(format!("jarvis-valid-{}.json", std::process::id()));
+    std::fs::write(&path, r#"{"shutdown_timeout_secs":5}"#).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_jarvis"))
+        .env_clear()
+        .arg("--config")
+        .arg(&path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    output.read_line(&mut line).unwrap();
+    assert!(line.contains("started"), "{line}");
+    assert!(Command::new("/bin/kill").args(["-TERM", &child.id().to_string()]).status().unwrap().success());
+    line.clear();
+    output.read_line(&mut line).unwrap();
+    assert!(line.contains("stopped"), "{line}");
+    assert!(child.wait().unwrap().success());
+    std::fs::remove_file(path).unwrap();
+}
