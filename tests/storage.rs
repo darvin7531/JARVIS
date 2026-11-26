@@ -578,3 +578,113 @@ fn typed_evidence_and_audit_survive_reopen_through_port() {
     drop(store);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn wal_backup_with_concurrent_writes_is_consistent_and_refuses_live_destination() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc,
+    };
+    let root = std::env::temp_dir().join(format!("jarvis-wal-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let source = root.join("source");
+    let snapshot = root.join("snapshot");
+    let mut store = SqliteStore::create(&source).unwrap();
+    let db = rusqlite::Connection::open(source.join("jarvis.sqlite3")).unwrap();
+    let mode: String = db
+        .query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(mode, "wal");
+    drop(db);
+    let task = Task {
+        id: "wal".into(),
+        version: 1,
+        title: "initial".into(),
+    };
+    store.create_task(&task, "created", &[]).unwrap();
+    let running = Arc::new(AtomicBool::new(true));
+    let flag = running.clone();
+    let path = source.join("jarvis.sqlite3");
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let writer = std::thread::spawn(move || {
+        let mut db = rusqlite::Connection::open(path).unwrap();
+        db.busy_timeout(std::time::Duration::from_secs(2)).unwrap();
+        let mut revision = 1;
+        while flag.load(Ordering::Relaxed) && revision < 500 {
+            revision += 1;
+            let tx = db.transaction().unwrap();
+            tx.execute("UPDATE tasks SET version = ?1 WHERE id = 'wal'", [revision])
+                .unwrap();
+            tx.execute("INSERT INTO events (task_id, event, revision, occurred_at) VALUES ('wal', 'write', ?1, 'now')", [revision]).unwrap();
+            tx.commit().unwrap();
+            if revision == 2 {
+                ready_tx.send(()).unwrap();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    });
+    ready_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    let start = std::time::Instant::now();
+    let result = store.backup(&snapshot);
+    running.store(false, Ordering::Relaxed);
+    writer.join().unwrap();
+    result.unwrap();
+    assert!(start.elapsed() < std::time::Duration::from_secs(10));
+    let restored = SqliteStore::open(&snapshot).unwrap();
+    let version = restored.task("wal").unwrap().unwrap().version;
+    let audit = restored.audit_metadata("wal").unwrap();
+    assert_eq!(audit.last().unwrap().revision, Some(version));
+    assert!(version >= 2);
+    assert!(store.backup(&source).is_err());
+    assert!(SqliteStore::open(&source)
+        .unwrap()
+        .task("wal")
+        .unwrap()
+        .is_some());
+    drop(restored);
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn storage_error_output_does_not_leak_secrets() {
+    const SECRET: &str = "sensitive-token-739284";
+    if std::env::var_os("JARVIS_ERROR_CHILD").is_some() {
+        let dir =
+            std::env::temp_dir().join(format!("jarvis-error-{}-{}", SECRET, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut store = SqliteStore::create(&dir).unwrap();
+        let db = rusqlite::Connection::open(dir.join("jarvis.sqlite3")).unwrap();
+        db.execute_batch("CREATE TRIGGER fail_secret BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT, 'sensitive-token-739284'); END;").unwrap();
+        let task = Task {
+            id: SECRET.into(),
+            version: 1,
+            title: SECRET.into(),
+        };
+        let error = store.create_task(&task, SECRET, &[]).unwrap_err();
+        eprintln!("{error} {error:?}");
+        drop(db);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+        return;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "storage_error_output_does_not_leak_secrets",
+            "--nocapture",
+        ])
+        .env("JARVIS_ERROR_CHILD", "1")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.contains("storage operation failed"));
+    assert!(!output.contains(SECRET));
+}
