@@ -32,8 +32,17 @@ pub struct SqliteStore {
 impl SqliteStore {
     pub fn open(path: &Path) -> Result<Self, StorageError> {
         std::fs::create_dir_all(path).map_err(|_| StorageError)?;
-        let db = Connection::open(path.join("jarvis.sqlite3"))?;
-        db.execute_batch("PRAGMA foreign_keys = ON; CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, version INTEGER NOT NULL, title TEXT NOT NULL); CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), event TEXT NOT NULL); CREATE TABLE IF NOT EXISTS evidence (task_id TEXT NOT NULL REFERENCES tasks(id), reference TEXT NOT NULL);")?;
+        let mut db = Connection::open(path.join("jarvis.sqlite3"))?;
+        db.execute_batch("PRAGMA foreign_keys = ON;")?;
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if !(0..=1).contains(&version) {
+            return Err(StorageError);
+        }
+        if version == 0 {
+            tx.execute_batch("CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, version INTEGER NOT NULL, title TEXT NOT NULL); CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), event TEXT NOT NULL); CREATE TABLE IF NOT EXISTS evidence (task_id TEXT NOT NULL REFERENCES tasks(id), reference TEXT NOT NULL); PRAGMA user_version = 1;")?;
+        }
+        tx.commit()?;
         Ok(Self { db })
     }
 
