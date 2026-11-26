@@ -465,3 +465,20 @@ fn opening_a_workspace_with_missing_database_must_not_create_one() {
     assert!(!dir.join("jarvis.sqlite3").exists());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn rejects_forged_known_schema_without_modification() {
+    let dir = std::env::temp_dir().join(format!("jarvis-forged-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("jarvis.sqlite3");
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch("CREATE TABLE tasks (id TEXT PRIMARY KEY, version INTEGER NOT NULL, title TEXT NOT NULL); CREATE TABLE events (id INTEGER PRIMARY KEY, task_id TEXT NOT NULL, event TEXT NOT NULL); CREATE TABLE evidence (task_id TEXT NOT NULL, reference TEXT NOT NULL); PRAGMA user_version = 1;").unwrap();
+    drop(db);
+    assert!(SqliteStore::open(&dir).is_err());
+    let db = rusqlite::Connection::open(path).unwrap();
+    let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+    assert_eq!(version, 1);
+    drop(db);
+    std::fs::remove_dir_all(dir).unwrap();
+}
