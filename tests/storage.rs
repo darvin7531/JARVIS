@@ -206,3 +206,22 @@ fn rejects_unversioned_database_with_existing_tables_without_modification() {
     drop(db);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn task_and_audit_writes_work_through_storage_port() {
+    let dir = std::env::temp_dir().join(format!("jarvis-port-write-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut store = SqliteStore::open(&dir).unwrap();
+    let port: &mut dyn jarvis::storage::TaskStore = &mut store;
+    let task = Task {
+        id: "written".into(),
+        version: 1,
+        title: "port".into(),
+    };
+    port.write_task(&task, "created", &[]).unwrap();
+    port.write_event("written", "reviewed").unwrap();
+    assert_eq!(port.read_task("written").unwrap(), Some(task));
+    assert_eq!(port.read_events("written").unwrap(), ["created", "reviewed"]);
+    drop(store);
+    std::fs::remove_dir_all(dir).unwrap();
+}
