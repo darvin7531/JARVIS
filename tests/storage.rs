@@ -503,3 +503,19 @@ fn backup_times_out_under_exclusive_lock_without_publishing() {
     drop(store);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn workspace_creation_is_private_and_never_replaces_existing_data() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("jarvis-private-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let store = SqliteStore::create(&dir).unwrap();
+    assert_eq!(
+        std::fs::metadata(&dir).unwrap().permissions().mode() & 0o077,
+        0
+    );
+    assert!(SqliteStore::create(&dir).is_err());
+    drop(store);
+    assert!(SqliteStore::open(&dir).is_ok());
+    std::fs::remove_dir_all(dir).unwrap();
+}
