@@ -369,3 +369,56 @@ fn unsupported_schema_has_a_distinct_redacted_error() {
     assert_eq!(error.to_string(), "unsupported schema version");
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn failed_forward_migration_preserves_existing_version_and_data() {
+    let dir = std::env::temp_dir().join(format!("jarvis-failed-migration-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("jarvis.sqlite3");
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch("CREATE TABLE tasks (id TEXT PRIMARY KEY, version INTEGER NOT NULL, title TEXT NOT NULL); CREATE TABLE events (id INTEGER PRIMARY KEY, task_id TEXT NOT NULL, event TEXT NOT NULL); INSERT INTO tasks VALUES ('keep', 1, 'data'); PRAGMA user_version = 1;").unwrap();
+    drop(db);
+    assert!(SqliteStore::open(&dir).is_err());
+    let db = rusqlite::Connection::open(path).unwrap();
+    let version: i64 = db
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    let title: String = db
+        .query_row("SELECT title FROM tasks WHERE id='keep'", [], |r| r.get(0))
+        .unwrap();
+    let indexes: i64 = db
+        .query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE name='events_task_id'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!((version, title.as_str(), indexes), (1, "data", 0));
+    drop(db);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn sqlite_failures_redact_task_values() {
+    let dir = std::env::temp_dir().join(format!("jarvis-redact-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut store = SqliteStore::open(&dir).unwrap();
+    let task = Task {
+        id: "secret-token-value".into(),
+        version: 1,
+        title: "secret-token-value".into(),
+    };
+    store.create_task(&task, "created", &[]).unwrap();
+    let error = store.create_task(&task, "secret-token-value", &[]).unwrap_err();
+    assert!(!format!("{error} {error:?}").contains("secret-token-value"));
+    drop(store);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bundled_sqlite_supports_fts5() {
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch("CREATE VIRTUAL TABLE probe USING fts5(content);")
+        .unwrap();
+}
