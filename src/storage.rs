@@ -40,6 +40,9 @@ fn validate_schema(db: &Connection, version: i64) -> Result<(), StorageError> {
     if version >= 3 {
         expected.execute_batch("ALTER TABLE events ADD COLUMN revision INTEGER; ALTER TABLE events ADD COLUMN occurred_at TEXT;")?;
     }
+    if version >= 4 {
+        expected.execute_batch("ALTER TABLE evidence ADD COLUMN provenance TEXT; ALTER TABLE evidence ADD COLUMN observed_at TEXT; ALTER TABLE evidence ADD COLUMN classification TEXT;")?;
+    }
     fn definitions(db: &Connection) -> Result<Vec<(String, String)>, StorageError> {
         let mut query = db.prepare("SELECT name, sql FROM sqlite_schema WHERE type IN ('table', 'index') AND name NOT LIKE 'sqlite_%' ORDER BY name")?;
         let definitions = query
@@ -95,7 +98,7 @@ impl SqliteStore {
         db.execute_batch("PRAGMA foreign_keys = ON;")?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if !(0..=3).contains(&version) {
+        if !(0..=4).contains(&version) {
             return Err(StorageError::UnsupportedSchema);
         }
         if version > 0 {
@@ -120,6 +123,9 @@ impl SqliteStore {
         }
         if version < 3 {
             tx.execute_batch("ALTER TABLE events ADD COLUMN revision INTEGER; ALTER TABLE events ADD COLUMN occurred_at TEXT; PRAGMA user_version = 3;")?;
+        }
+        if version < 4 {
+            tx.execute_batch("ALTER TABLE evidence ADD COLUMN provenance TEXT; ALTER TABLE evidence ADD COLUMN observed_at TEXT; ALTER TABLE evidence ADD COLUMN classification TEXT; PRAGMA user_version = 4;")?;
         }
         tx.commit()?;
         Ok(Self { db })
