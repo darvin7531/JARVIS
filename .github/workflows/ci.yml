@@ -1,0 +1,19 @@
+name: CI
+on: [push, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.85.1
+          components: rustfmt, clippy
+      - run: cargo generate-lockfile
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cargo-lock
+          path: Cargo.lock
+      - run: cargo test --locked
