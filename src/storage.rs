@@ -71,8 +71,18 @@ impl SqliteStore {
         Ok(())
     }
 
-    pub fn backup(&self, _: &Path) -> Result<(), StorageError> {
-        Err(StorageError)
+    pub fn backup(&self, path: &Path) -> Result<(), StorageError> {
+        std::fs::create_dir(path).map_err(|_| StorageError)?;
+        let result = (|| {
+            let mut destination = Connection::open(path.join("jarvis.sqlite3"))?;
+            let backup = rusqlite::backup::Backup::new(&self.db, &mut destination)?;
+            backup.run_to_completion(100, std::time::Duration::from_millis(10), None)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_dir_all(path);
+        }
+        result
     }
 
     pub fn task(&self, id: &str) -> Result<Option<Task>, StorageError> {
