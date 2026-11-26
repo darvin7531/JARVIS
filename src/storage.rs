@@ -33,7 +33,7 @@ impl SqliteStore {
     pub fn open(path: &Path) -> Result<Self, StorageError> {
         std::fs::create_dir_all(path).map_err(|_| StorageError)?;
         let db = Connection::open(path.join("jarvis.sqlite3"))?;
-        db.execute_batch("PRAGMA foreign_keys = ON; CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, version INTEGER NOT NULL, title TEXT NOT NULL); CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), event TEXT NOT NULL);")?;
+        db.execute_batch("PRAGMA foreign_keys = ON; CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, version INTEGER NOT NULL, title TEXT NOT NULL); CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), event TEXT NOT NULL); CREATE TABLE IF NOT EXISTS evidence (task_id TEXT NOT NULL REFERENCES tasks(id), reference TEXT NOT NULL);")?;
         Ok(Self { db })
     }
 
@@ -41,7 +41,7 @@ impl SqliteStore {
         &mut self,
         task: &Task,
         event: &str,
-        _evidence: &[String],
+        evidence: &[String],
     ) -> Result<(), StorageError> {
         let tx = self.db.transaction()?;
         tx.execute(
@@ -52,6 +52,12 @@ impl SqliteStore {
             "INSERT INTO events (task_id, event) VALUES (?1, ?2)",
             params![task.id, event],
         )?;
+        for reference in evidence {
+            tx.execute(
+                "INSERT INTO evidence (task_id, reference) VALUES (?1, ?2)",
+                params![task.id, reference],
+            )?;
+        }
         tx.commit()?;
         Ok(())
     }
