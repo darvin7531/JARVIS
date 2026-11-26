@@ -699,7 +699,7 @@ fn reopen_rejects_extra_schema_objects_and_foreign_key_violations() {
     for (name, sql) in [
         ("trigger", "CREATE TRIGGER evil AFTER INSERT ON tasks BEGIN UPDATE tasks SET title='changed'; END;"),
         ("view", "CREATE VIEW evil AS SELECT * FROM tasks;"),
-        ("foreign-key", "INSERT INTO events (task_id, event) VALUES ('missing', 'orphan');"),
+        ("foreign-key", "PRAGMA foreign_keys=OFF; INSERT INTO events (task_id, event) VALUES ('missing', 'orphan');"),
     ] {
         let dir = std::env::temp_dir().join(format!("jarvis-invalid-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

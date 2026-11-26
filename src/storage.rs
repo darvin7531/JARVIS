@@ -193,6 +193,25 @@ impl SqliteStore {
         event: &str,
         evidence: &[Evidence],
     ) -> Result<(), StorageError> {
+        for item in evidence {
+            if [&item.provenance, &item.classification]
+                .into_iter()
+                .flatten()
+                .any(|value| value.trim().is_empty() || value.len() > 1024)
+            {
+                return Err(StorageError::OperationFailed);
+            }
+            if let Some(time) = &item.observed_at {
+                let valid: bool = self.db.query_row(
+                    "SELECT coalesce(strftime('%Y-%m-%dT%H:%M:%SZ', ?1, '+0 days') = ?1 OR strftime('%Y-%m-%dT%H:%M:%fZ', ?1, '+0 days') = ?1, 0)",
+                    [time],
+                    |row| row.get(0),
+                )?;
+                if !valid {
+                    return Err(StorageError::OperationFailed);
+                }
+            }
+        }
         let tx = self.db.transaction()?;
         tx.execute(
             "INSERT INTO tasks (id, version, title) VALUES (?1, ?2, ?3)",
