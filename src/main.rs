@@ -48,10 +48,24 @@ fn run() -> Result<(), Error> {
         }
         Some(_) => return Err(Error::InvalidArguments),
     };
-    println!("{}", serde_json::to_string(&Event { event: Lifecycle::Started }).unwrap());
+    println!(
+        "{}",
+        serde_json::to_string(&Event {
+            event: Lifecycle::Started
+        })
+        .unwrap()
+    );
     let mut line = String::new();
-    io::stdin().read_line(&mut line).map_err(|_| Error::StdinReadFailed)?;
-    println!("{}", serde_json::to_string(&Event { event: Lifecycle::Stopped }).unwrap());
+    io::stdin()
+        .read_line(&mut line)
+        .map_err(|_| Error::StdinReadFailed)?;
+    println!(
+        "{}",
+        serde_json::to_string(&Event {
+            event: Lifecycle::Stopped
+        })
+        .unwrap()
+    );
     Ok(())
 }
 
