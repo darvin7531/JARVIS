@@ -60,7 +60,7 @@ fn validate_schema(db: &Connection, version: i64) -> Result<(), StorageError> {
     }
     fn definitions(db: &Connection) -> Result<Vec<(String, String)>, StorageError> {
         let mut query = db.prepare(
-            "SELECT name, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY name",
+            "SELECT name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name",
         )?;
         let definitions = query
             .query_map([], |row| {
@@ -147,7 +147,7 @@ impl SqliteStore {
                 return Err(StorageError::UnsupportedSchema);
             }
             let objects: i64 = tx.query_row(
-                "SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'",
+                "SELECT count(*) FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'",
                 [],
                 |row| row.get(0),
             )?;
