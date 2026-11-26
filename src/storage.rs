@@ -71,6 +71,10 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub fn backup(&self, _: &Path) -> Result<(), StorageError> {
+        Err(StorageError)
+    }
+
     pub fn task(&self, id: &str) -> Result<Option<Task>, StorageError> {
         Ok(self
             .db

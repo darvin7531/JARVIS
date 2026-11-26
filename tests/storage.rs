@@ -70,3 +70,24 @@ fn rejects_unknown_future_schema_without_changing_it() {
     drop(db);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn backup_restores_a_consistent_workspace() {
+    let root = std::env::temp_dir().join(format!("jarvis-backup-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let source = root.join("source");
+    let restored = root.join("restored");
+    let task = Task {
+        id: "backup-task".into(),
+        version: 1,
+        title: "snapshot".into(),
+    };
+    let mut store = SqliteStore::open(&source).unwrap();
+    store.create_task(&task, "created", &[]).unwrap();
+    store.backup(&restored).unwrap();
+    drop(store);
+    let restored_store = SqliteStore::open(&restored).unwrap();
+    assert_eq!(restored_store.task("backup-task").unwrap(), Some(task));
+    drop(restored_store);
+    std::fs::remove_dir_all(root).unwrap();
+}
