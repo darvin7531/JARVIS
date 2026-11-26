@@ -484,3 +484,22 @@ fn rejects_forged_known_schema_without_modification() {
     drop(db);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn backup_times_out_under_exclusive_lock_without_publishing() {
+    let root = std::env::temp_dir().join(format!("jarvis-backup-busy-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let source = root.join("source");
+    let dest = root.join("snapshot");
+    let store = SqliteStore::create(&source).unwrap();
+    let db = rusqlite::Connection::open(source.join("jarvis.sqlite3")).unwrap();
+    db.execute_batch("BEGIN EXCLUSIVE").unwrap();
+    let started = std::time::Instant::now();
+    assert!(store.backup(&dest).is_err());
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    assert!(!dest.exists());
+    db.execute_batch("ROLLBACK").unwrap();
+    drop(db);
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
