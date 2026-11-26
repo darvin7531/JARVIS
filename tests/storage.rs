@@ -182,3 +182,27 @@ fn task_can_be_read_through_storage_port() {
     drop(store);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn rejects_unversioned_database_with_existing_tables_without_modification() {
+    let dir = std::env::temp_dir().join(format!("jarvis-foreign-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("jarvis.sqlite3");
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch("CREATE TABLE tasks (unexpected TEXT);")
+        .unwrap();
+    drop(db);
+    assert!(SqliteStore::open(&dir).is_err());
+    let db = rusqlite::Connection::open(path).unwrap();
+    let count: i64 = db
+        .query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='events'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0);
+    drop(db);
+    std::fs::remove_dir_all(dir).unwrap();
+}
