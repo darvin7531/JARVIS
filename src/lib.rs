@@ -11,3 +11,5 @@ pub enum Lifecycle {
 pub struct Event {
     pub event: Lifecycle,
 }
+
+pub mod storage;
