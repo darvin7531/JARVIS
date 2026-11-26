@@ -526,7 +526,9 @@ fn evidence_metadata_columns_exist() {
     let _ = std::fs::remove_dir_all(&dir);
     drop(SqliteStore::create(&dir).unwrap());
     let db = rusqlite::Connection::open(dir.join("jarvis.sqlite3")).unwrap();
-    assert!(db.prepare("SELECT provenance, observed_at, classification FROM evidence").is_ok());
+    assert!(db
+        .prepare("SELECT provenance, observed_at, classification FROM evidence")
+        .is_ok());
     drop(db);
     std::fs::remove_dir_all(dir).unwrap();
 }
