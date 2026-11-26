@@ -303,6 +303,14 @@ impl SqliteStore {
     }
 
     pub fn backup(&self, path: &Path) -> Result<(), StorageError> {
+        self.backup_with_step(path, || {})
+    }
+
+    fn backup_with_step(
+        &self,
+        path: &Path,
+        mut after_step: impl FnMut(),
+    ) -> Result<(), StorageError> {
         use std::os::unix::{ffi::OsStrExt, fs::DirBuilderExt};
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -327,6 +335,10 @@ impl SqliteStore {
                         rusqlite::backup::StepResult::Done => break,
                         _ if std::time::Instant::now() >= deadline => {
                             return Err(StorageError::OperationFailed);
+                        }
+                        rusqlite::backup::StepResult::More => {
+                            after_step();
+                            std::thread::sleep(std::time::Duration::from_millis(10));
                         }
                         _ => std::thread::sleep(std::time::Duration::from_millis(10)),
                     }
@@ -441,5 +453,90 @@ impl TaskStore for SqliteStore {
     }
     fn read_task(&self, id: &str) -> Result<Option<Task>, StorageError> {
         self.task(id)
+    }
+}
+
+#[cfg(test)]
+mod backup_tests {
+    use super::*;
+    use std::{sync::mpsc, time::Duration};
+
+    #[test]
+    fn wal_backup_restores_complete_history_after_mid_backup_commits() {
+        let root = std::env::temp_dir().join(format!("jarvis-wal-steps-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let source = root.join("source");
+        let snapshot = root.join("snapshot");
+        let mut store = SqliteStore::create(&source).unwrap();
+        store.db.pragma_update(None, "journal_mode", "WAL").unwrap();
+        let task = Task {
+            id: "wal".into(),
+            version: 1,
+            title: "x".repeat(600_000),
+        };
+        let initial = Evidence {
+            reference: "ref-1".into(),
+            provenance: Some("source-1".into()),
+            observed_at: Some("2026-11-26T12:00:00Z".into()),
+            classification: Some("internal".into()),
+        };
+        store
+            .create_task_with_evidence(&task, "created", &[initial])
+            .unwrap();
+        let (start_tx, start_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let path = source.join("jarvis.sqlite3");
+        let writer = std::thread::spawn(move || {
+            let mut db = Connection::open(path).unwrap();
+            db.busy_timeout(Duration::from_secs(2)).unwrap();
+            start_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            for revision in 2..=4 {
+                let tx = db.transaction().unwrap();
+                tx.execute("UPDATE tasks SET version = ?1 WHERE id = 'wal'", [revision])
+                    .unwrap();
+                tx.execute("INSERT INTO events (task_id, event, revision, occurred_at) VALUES ('wal', 'write', ?1, 'now')", [revision]).unwrap();
+                tx.execute("INSERT INTO evidence (task_id, reference, provenance, observed_at, classification) VALUES ('wal', ?1, ?2, '2026-11-26T12:00:00Z', 'internal')", params![format!("ref-{revision}"), format!("source-{revision}")]).unwrap();
+                tx.commit().unwrap();
+            }
+            done_tx.send(()).unwrap();
+        });
+        let mut started = false;
+        store
+            .backup_with_step(&snapshot, || {
+                if !started {
+                    started = true;
+                    start_tx.send(()).unwrap();
+                    done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+                }
+            })
+            .unwrap();
+        writer.join().unwrap();
+        assert!(
+            started,
+            "backup must perform an incomplete step before the commits"
+        );
+        let restored = SqliteStore::open(&snapshot).unwrap();
+        assert_eq!(restored.task("wal").unwrap().unwrap().version, 4);
+        let audit = restored.audit_metadata("wal").unwrap();
+        assert_eq!(audit.len(), 4);
+        for (index, row) in audit.iter().enumerate() {
+            assert_eq!(row.revision, Some(index as i64 + 1));
+            assert_eq!(row.event, if index == 0 { "created" } else { "write" });
+            assert!(row.occurred_at.as_deref().is_some_and(|s| !s.is_empty()));
+        }
+        let evidence = restored.evidence_metadata("wal").unwrap();
+        assert_eq!(evidence.len(), 4);
+        for (index, row) in evidence.iter().enumerate() {
+            assert_eq!(row.reference, format!("ref-{}", index + 1));
+            assert_eq!(
+                row.provenance.as_deref(),
+                Some(format!("source-{}", index + 1).as_str())
+            );
+            assert_eq!(row.observed_at.as_deref(), Some("2026-11-26T12:00:00Z"));
+            assert_eq!(row.classification.as_deref(), Some("internal"));
+        }
+        drop(restored);
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
