@@ -455,3 +455,13 @@ fn audit_records_revision_and_timestamp() {
     drop(db);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn opening_a_workspace_with_missing_database_must_not_create_one() {
+    let dir = std::env::temp_dir().join(format!("jarvis-missing-db-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(SqliteStore::open(&dir).is_err());
+    assert!(!dir.join("jarvis.sqlite3").exists());
+    std::fs::remove_dir_all(dir).unwrap();
+}
