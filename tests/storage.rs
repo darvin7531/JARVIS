@@ -762,3 +762,35 @@ fn invalid_evidence_metadata_is_rejected_atomically() {
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn reopen_rejects_integrity_errors_without_repairing_data() {
+    let dir = std::env::temp_dir().join(format!("jarvis-integrity-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    drop(SqliteStore::create(&dir).unwrap());
+    let path = dir.join("jarvis.sqlite3");
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch("PRAGMA writable_schema=ON; UPDATE sqlite_schema SET sql=replace(sql, 'title TEXT NOT NULL', 'title TEXT') WHERE name='tasks';").unwrap();
+    drop(db);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch("INSERT INTO tasks VALUES ('broken', 1, NULL); PRAGMA writable_schema=ON; UPDATE sqlite_schema SET sql=replace(sql, 'title TEXT)', 'title TEXT NOT NULL)') WHERE name='tasks';").unwrap();
+    drop(db);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let check: String = db
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .unwrap();
+    assert_ne!(check, "ok");
+    drop(db);
+    assert!(SqliteStore::open(&dir).is_err());
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let count: i64 = db
+        .query_row(
+            "SELECT count(*) FROM tasks WHERE title IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+    drop(db);
+    std::fs::remove_dir_all(dir).unwrap();
+}
