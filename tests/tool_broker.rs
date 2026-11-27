@@ -19,7 +19,7 @@ fn request() -> ToolRequest {
 }
 #[test]
 fn forged_request_grant_cannot_authorize_another_resource() {
-    let mut broker = Broker::new(contract());
+    let mut broker = Broker::with_approval(contract(), request());
     let mut forged = request();
     forged.resource = "secret".into();
     forged.arguments = json!({"text":"exfiltrate"});
@@ -31,7 +31,7 @@ fn forged_request_grant_cannot_authorize_another_resource() {
 }
 #[test]
 fn contract_enforces_every_constraint_before_execution() {
-    let mut broker = Broker::new(contract());
+    let mut broker = Broker::with_approval(contract(), request());
     let cases: Vec<(Value, BrokerError)> = vec![
         (json!({"tool":"shell"}), BrokerError::UnknownTool),
         (json!({"resource":""}), BrokerError::InvalidResource),
@@ -75,19 +75,19 @@ fn explicit_deny_scope_and_expiry_override_allow() {
     let mut denied = contract();
     denied.denied_resources.push("task/item".into());
     assert_eq!(
-        Broker::new(denied).call(&request()),
+        Broker::with_approval(denied, request()).call(&request()),
         Err(BrokerError::Denied)
     );
     let mut no_scope = contract();
     no_scope.scopes = vec![Scope::Write];
     assert_eq!(
-        Broker::new(no_scope).call(&request()),
+        Broker::with_approval(no_scope, request()).call(&request()),
         Err(BrokerError::Denied)
     );
     let mut expired = contract();
     expired.expires_at = SystemTime::now() - Duration::from_secs(1);
     assert_eq!(
-        Broker::new(expired).call(&request()),
+        Broker::with_approval(expired, request()).call(&request()),
         Err(BrokerError::Denied)
     );
 }
@@ -99,6 +99,7 @@ fn request_cannot_replace_or_modify_contract() {
         "expires_at",
         "denied_resources",
         "permitted_text",
+        "approval",
     ] {
         let mut payload = json!({"tool":"inert", "action":"echo", "resource":"task/item", "data_class":"public", "arguments":{"text":"hello"}});
         payload[field] = json!({});
@@ -106,10 +107,24 @@ fn request_cannot_replace_or_modify_contract() {
     }
     let installed = contract();
     let mut outside = installed.resource.clone();
-    let mut broker = Broker::new(installed);
+    let mut broker = Broker::with_approval(installed, request());
     outside.push_str("/changed");
     let mut changed = request();
     changed.resource = outside;
     assert_eq!(broker.call(&changed), Err(BrokerError::Denied));
     assert_eq!(broker.call(&request()), Ok("hello".into()));
+}
+
+#[test]
+fn approval_is_exact_and_single_use() {
+    let mut different = request();
+    different.arguments = json!({"text":"different"});
+    let mut mismatch = Broker::with_approval(contract(), different);
+    assert_eq!(mismatch.call(&request()), Err(BrokerError::Denied));
+    assert_eq!(mismatch.executions(), 0);
+
+    let mut broker = Broker::with_approval(contract(), request());
+    assert_eq!(broker.call(&request()), Ok("hello".into()));
+    assert_eq!(broker.call(&request()), Err(BrokerError::Denied));
+    assert_eq!(broker.executions(), 1);
 }

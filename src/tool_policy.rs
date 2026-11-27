@@ -24,7 +24,7 @@ pub enum DataClass {
     Sensitive,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ToolRequest {
     pub tool: String,
@@ -65,6 +65,7 @@ struct InertArguments {
 // This in-process boundary does not authenticate callers or isolate processes.
 pub struct Broker {
     contract: TaskContract,
+    approval: Option<ToolRequest>,
     executions: usize,
 }
 
@@ -72,6 +73,17 @@ impl Broker {
     pub fn new(contract: TaskContract) -> Self {
         Self {
             contract,
+            approval: None,
+            executions: 0,
+        }
+    }
+
+    // Trusted owner only: never derive this approval from model input alone.
+    // ponytail: in-process only; persistent multi-process approval needs atomic consumption.
+    pub fn with_approval(contract: TaskContract, approved: ToolRequest) -> Self {
+        Self {
+            contract,
+            approval: Some(approved),
             executions: 0,
         }
     }
@@ -107,6 +119,10 @@ impl Broker {
         if args.text != contract.permitted_text {
             return Err(BrokerError::Denied);
         }
+        if self.approval.as_ref() != Some(request) {
+            return Err(BrokerError::Denied);
+        }
+        self.approval = None;
         self.executions += 1;
         Ok(args.text)
     }
