@@ -106,3 +106,29 @@ fn configured_cli_streams_and_forwards_limits() {
     server.join().unwrap();
     fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn timeout_reports_missing_usage() {
+    use std::{io::Write, net::TcpListener, thread, time::Duration};
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nConnection: close\r\n\r\n{\"response\":\"partial\",\"done\":false}\n").unwrap();
+        thread::sleep(Duration::from_secs(2));
+    });
+    let path = std::env::temp_dir().join(format!("jarvis-timeout-{}.json", std::process::id()));
+    fs::write(&path, format!(r#"{{"limits":{{"timeout_seconds":1}},"models":[{{"name":"test","tier":"t1","capabilities":["text"],"allowed_data":["public"],"port":{port}}}]}}"#)).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_jarvis"))
+        .args(["chat", "--config", path.to_str().unwrap(), "hi"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert_eq!(output.stdout, b"partial");
+    assert_eq!(
+        output.stderr,
+        b"{\"usage\":null}\n{\"error\":\"timeout\"}\n"
+    );
+    server.join().unwrap();
+    fs::remove_file(path).unwrap();
+}
