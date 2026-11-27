@@ -274,7 +274,17 @@ fn run_owner_inner(
                 DataClass::Public => jarvis::inference::DataClass::Public,
                 DataClass::Sensitive => jarvis::inference::DataClass::Sensitive,
             };
-            crate::chat::agent_inference(config, &owner.context, class, &cancelled)?
+            match crate::chat::agent_inference(config, &owner.context, class, &cancelled) {
+                Ok(output) => output,
+                Err((error, dispatched)) => {
+                    if !dispatched {
+                        store
+                            .finish_agent_step(&owner.task, owner.revision, true, false)
+                            .map_err(|_| "agent_storage")?;
+                    }
+                    return Err(error);
+                }
+            }
         } else {
             let text = item.to_string();
             let provider = MockProvider::new(&text);

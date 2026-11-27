@@ -164,9 +164,20 @@ fn configured_rejection_finishes_only_proven_pre_dispatch_steps() {
     use std::{io::Read, net::TcpListener};
 
     for case in ["policy", "budget", "unknown"] {
-        let root = std::env::temp_dir().join(format!("agent-rejection-{}-{case}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("agent-rejection-{}-{case}", std::process::id()));
         let mut store = SqliteStore::create(&root).unwrap();
-        store.create_task(&Task { id: "task".into(), version: 1, title: "test".into() }, "created", &[]).unwrap();
+        store
+            .create_task(
+                &Task {
+                    id: "task".into(),
+                    version: 1,
+                    title: "test".into(),
+                },
+                "created",
+                &[],
+            )
+            .unwrap();
         drop(store);
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -185,17 +196,45 @@ fn configured_rejection_finishes_only_proven_pre_dispatch_steps() {
                 assert!(stream.read(&mut buf).unwrap() > 0);
                 // Close without a terminal usage frame: dispatch and usage are uncertain.
             }))
-        } else { None };
-        let run = || Command::new(env!("CARGO_BIN_EXE_jarvis")).args(["agent", "--owner"]).arg(&owner_path).arg("--config").arg(&config_path).output().unwrap();
+        } else {
+            None
+        };
+        let run = || {
+            Command::new(env!("CARGO_BIN_EXE_jarvis"))
+                .args(["agent", "--owner"])
+                .arg(&owner_path)
+                .arg("--config")
+                .arg(&config_path)
+                .output()
+                .unwrap()
+        };
         let output = run();
-        if let Some(server) = server { server.join().unwrap(); }
+        if let Some(server) = server {
+            server.join().unwrap();
+        }
         assert!(!output.status.success());
-        if case != "unknown" { assert!(listener.accept().is_err(), "unexpected provider connection"); }
+        if case != "unknown" {
+            assert!(listener.accept().is_err(), "unexpected provider connection");
+        }
         let db = rusqlite::Connection::open(root.join("jarvis.sqlite3")).unwrap();
         let state: (i64, i64, i64, i64, i64) = db.query_row("SELECT steps, failures, pending, (SELECT count(*) FROM tool_executions), (SELECT count(*) FROM mock_state) FROM agent_runtime WHERE task_id='task'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).unwrap();
-        assert_eq!(state, if case == "unknown" {(1, 0, 1, 0, 0)} else {(1, 1, 0, 0, 0)}, "{case}");
+        assert_eq!(
+            state,
+            if case == "unknown" {
+                (1, 0, 1, 0, 0)
+            } else {
+                (1, 1, 0, 0, 0)
+            },
+            "{case}"
+        );
         if case == "unknown" {
-            let pending: i64 = db.query_row("SELECT count(*) FROM inference_budget WHERE pending=1", [], |r| r.get(0)).unwrap();
+            let pending: i64 = db
+                .query_row(
+                    "SELECT count(*) FROM inference_budget WHERE pending=1",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
             assert_eq!(pending, 1);
             assert!(!run().status.success());
             assert!(listener.accept().is_err(), "uncertain inference replayed");

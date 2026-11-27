@@ -267,6 +267,7 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
         class,
         &cancelled,
         started,
+        &mut false,
         &mut |text| {
             let escaped;
             let text = if tty {
@@ -298,8 +299,9 @@ pub fn agent_inference(
     prompt: &str,
     class: DataClass,
     cancelled: &Arc<AtomicBool>,
-) -> Result<String, &'static str> {
+) -> Result<String, (&'static str, bool)> {
     let mut output = String::new();
+    let mut dispatched = false;
     configured_inference(
         config,
         prompt,
@@ -309,11 +311,13 @@ pub fn agent_inference(
         class,
         cancelled,
         Instant::now(),
+        &mut dispatched,
         &mut |chunk| {
             output.push_str(chunk);
             Ok(())
         },
-    )?;
+    )
+    .map_err(|error| (error, dispatched))?;
     Ok(output)
 }
 
@@ -327,6 +331,7 @@ fn configured_inference(
     class: DataClass,
     cancelled: &Arc<AtomicBool>,
     started: Instant,
+    dispatched: &mut bool,
     emit: &mut dyn FnMut(&str) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
     let timeout = Duration::from_secs(config.limits.timeout_seconds);
@@ -447,6 +452,8 @@ fn configured_inference(
         deadline,
     };
     let mut failure = None;
+    // From this boundary onward, failures cannot prove the provider saw nothing.
+    *dispatched = true;
     let result = Ollama {
         port: config.models[index].port,
         trusted_no_truncation: config.models[index].trusted_no_truncation,
