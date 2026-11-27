@@ -440,6 +440,36 @@ fn approved_call_without_trusted_budget_is_denied() {
 }
 
 #[test]
+fn failed_outcome_write_blocks_further_calls_after_reopen() {
+    let path = std::env::temp_dir().join(format!("jarvis-tool-uncertain-{}", std::process::id()));
+    let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
+    create_task(&mut store);
+    store.initialize_tool_budget(2).unwrap();
+    for id in ["one", "two"] {
+        store
+            .issue_tool_approval(
+                id,
+                "task",
+                1,
+                &request(),
+                SystemTime::now() + Duration::from_secs(60),
+            )
+            .unwrap();
+    }
+    let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
+    db.execute_batch("CREATE TRIGGER reject_outcome BEFORE INSERT ON events WHEN NEW.event LIKE '%tool_execution_outcome%' BEGIN SELECT RAISE(ABORT, 'failed'); END;").unwrap();
+    let mut broker = Broker::with_approval(contract(), store, "one".into(), "task".into(), 1);
+    assert_eq!(broker.call(&request()), Err(BrokerError::OutcomeUncertain));
+    assert_eq!(broker.executions(), 1);
+    drop(broker);
+    db.execute_batch("DROP TRIGGER reject_outcome;").unwrap();
+    let store = jarvis::storage::SqliteStore::open(&path).unwrap();
+    let mut broker = Broker::with_approval(contract(), store, "two".into(), "task".into(), 1);
+    assert_eq!(broker.call(&request()), Err(BrokerError::Denied));
+    assert_eq!(broker.executions(), 0);
+}
+
+#[test]
 fn successful_execution_records_a_correlated_outcome_after_intent() {
     let path = std::env::temp_dir().join(format!("jarvis-tool-outcome-{}", std::process::id()));
     let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
