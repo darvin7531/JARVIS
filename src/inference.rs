@@ -62,3 +62,94 @@ pub fn route<'a>(
         .find(|m| m.allowed_data.contains(&data))
         .ok_or(RouteError::DataNotAllowed)
 }
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum StreamError {
+    Truncated,
+    InvalidEvent,
+    TooLarge,
+    Failed,
+}
+
+/// Incrementally decodes Responses SSE frames. The maximum is per frame, in bytes.
+pub struct ResponseStream {
+    buffer: Vec<u8>,
+    max_frame: usize,
+    completed: bool,
+}
+
+impl ResponseStream {
+    pub fn new(max_frame: usize) -> Self {
+        Self {
+            buffer: Vec::new(),
+            max_frame,
+            completed: false,
+        }
+    }
+
+    pub fn push(&mut self, bytes: &[u8], text: &mut String) -> Result<(), StreamError> {
+        for byte in bytes {
+            if self.completed {
+                return Err(StreamError::InvalidEvent);
+            }
+            self.buffer.push(*byte);
+            if self.buffer.len() > self.max_frame {
+                return Err(StreamError::TooLarge);
+            }
+            if self.buffer.ends_with(b"\n\n") || self.buffer.ends_with(b"\r\n\r\n") {
+                let frame =
+                    std::str::from_utf8(&self.buffer).map_err(|_| StreamError::InvalidEvent)?;
+                let mut data = Vec::new();
+                let mut event = None;
+                for line in frame.lines() {
+                    if let Some(value) = line.strip_prefix("data:") {
+                        data.push(value.strip_prefix(' ').unwrap_or(value));
+                    } else if let Some(value) = line.strip_prefix("event:") {
+                        event = Some(value.strip_prefix(' ').unwrap_or(value));
+                    }
+                }
+                if !data.is_empty() {
+                    let value: serde_json::Value = serde_json::from_str(&data.join("\n"))
+                        .map_err(|_| StreamError::InvalidEvent)?;
+                    let kind = value
+                        .get("type")
+                        .and_then(|v| v.as_str())
+                        .ok_or(StreamError::InvalidEvent)?;
+                    if event.is_some_and(|e| e != kind) {
+                        return Err(StreamError::InvalidEvent);
+                    }
+                    match kind {
+                        "response.output_text.delta" => text.push_str(
+                            value
+                                .get("delta")
+                                .and_then(|v| v.as_str())
+                                .ok_or(StreamError::InvalidEvent)?,
+                        ),
+                        "response.completed" => {
+                            if value.pointer("/response/status").and_then(|v| v.as_str())
+                                != Some("completed")
+                            {
+                                return Err(StreamError::InvalidEvent);
+                            }
+                            self.completed = true;
+                        }
+                        "error" | "response.failed" | "response.incomplete" => {
+                            return Err(StreamError::Failed)
+                        }
+                        _ => {}
+                    }
+                }
+                self.buffer.clear();
+            }
+        }
+        Ok(())
+    }
+
+    pub fn finish(&self) -> Result<(), StreamError> {
+        if self.completed && self.buffer.is_empty() {
+            Ok(())
+        } else {
+            Err(StreamError::Truncated)
+        }
+    }
+}
