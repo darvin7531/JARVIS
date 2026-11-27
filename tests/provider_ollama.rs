@@ -26,10 +26,14 @@ fn serve(body: &'static str, delay: Duration) -> u16 {
         thread::sleep(delay);
         let _ = write!(
             stream,
-            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            body
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
         );
+        for chunk in body.as_bytes().chunks(3) {
+            let _ = stream.write_all(chunk);
+            let _ = stream.flush();
+            thread::sleep(Duration::from_millis(1));
+        }
     });
     port
 }
@@ -75,6 +79,18 @@ fn truncated_budget_timeout_cancel_and_redacted_errors() {
         Ollama { port }.generate(&r, &AtomicBool::new(true), &mut emit),
         Err(Error::Cancelled)
     );
+    let port = serve("", Duration::from_secs(1));
+    let cancel = AtomicBool::new(false);
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            thread::sleep(Duration::from_millis(80));
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+        assert_eq!(
+            Ollama { port }.generate(&request(), &cancel, &mut emit),
+            Err(Error::Cancelled)
+        );
+    });
 }
 #[test]
 fn actual_ollama_smoke_when_enabled() {
