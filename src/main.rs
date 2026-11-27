@@ -10,10 +10,12 @@ use signal_hook::{
 };
 use std::{
     env,
-    fs::File,
+    fs::{File, OpenOptions},
     io::{self, Read},
+    os::unix::fs::OpenOptionsExt,
     process::ExitCode,
     sync::mpsc,
+    time::Duration,
 };
 
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
@@ -45,6 +47,20 @@ impl Error {
             Self::Chat(code) => code,
         }
     }
+}
+
+fn open_config(path: impl AsRef<std::path::Path>) -> io::Result<File> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
+    Ok(file)
 }
 
 fn run() -> Result<(), Error> {
@@ -129,7 +145,7 @@ fn run() -> Result<(), Error> {
                 return Err(Error::InvalidArguments);
             }
             let mut data = Vec::new();
-            File::open(path)
+            open_config(path)
                 .map_err(|_| Error::InvalidConfig)?
                 .take(MAX_CONFIG_BYTES + 1)
                 .read_to_end(&mut data)
@@ -162,21 +178,30 @@ fn run() -> Result<(), Error> {
             }
         }
     });
-    println!(
-        "{}",
-        serde_json::to_string(&Event {
-            event: Lifecycle::Started
-        })
-        .unwrap()
-    );
+    let (stop_sender, stop_receiver) = mpsc::channel();
+    let (done_sender, done_receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        println!(
+            "{}",
+            serde_json::to_string(&Event {
+                event: Lifecycle::Started
+            })
+            .unwrap()
+        );
+        let _ = stop_receiver.recv();
+        println!(
+            "{}",
+            serde_json::to_string(&Event {
+                event: Lifecycle::Stopped
+            })
+            .unwrap()
+        );
+        let _ = done_sender.send(());
+    });
     let _ = receiver.recv();
-    println!(
-        "{}",
-        serde_json::to_string(&Event {
-            event: Lifecycle::Stopped
-        })
-        .unwrap()
-    );
+    let _ = stop_sender.send(());
+    // ponytail: blocked stdout may lose lifecycle events; use cancellable I/O if delivery is required.
+    let _ = done_receiver.recv_timeout(Duration::from_millis(100));
     Ok(())
 }
 
