@@ -1,3 +1,4 @@
+mod agent;
 mod chat;
 #[allow(dead_code)]
 mod provider;
@@ -67,6 +68,16 @@ fn open_config(path: impl AsRef<std::path::Path>) -> io::Result<File> {
 
 fn run() -> Result<(), Error> {
     let mut args = env::args_os().skip(1).peekable();
+    if args.peek().is_some_and(|arg| arg == "agent") {
+        args.next();
+        if args.next().is_none_or(|arg| arg != "--mock")
+            || args.next().is_none_or(|arg| arg != "diagnose")
+            || args.next().is_some()
+        {
+            return Err(Error::InvalidArguments);
+        }
+        return agent::run().map_err(Error::Chat);
+    }
     if args.peek().is_some_and(|arg| arg == "chat") {
         args.next();
         let backend = args.next().ok_or(Error::InvalidArguments)?;
