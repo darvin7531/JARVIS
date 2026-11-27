@@ -31,7 +31,13 @@ fn owner_closes_interrupted_runtime_without_losing_history() {
     let db = rusqlite::Connection::open(dir.join("jarvis.sqlite3")).unwrap();
     let row: (i64, i64, i64, i64) = db.query_row("SELECT steps, failures, pending, closed FROM agent_runtime WHERE task_id = 'agent' AND revision = 1", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
     assert_eq!(row, (1, 0, 1, 1));
-    let charge: (i64, i64) = db.query_row("SELECT tokens, pending FROM inference_budget WHERE id = ?1", [token], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    let charge: (i64, i64) = db
+        .query_row(
+            "SELECT tokens, pending FROM inference_budget WHERE id = ?1",
+            [token],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
     assert_eq!(charge, (20, 1));
     let event: String = db.query_row("SELECT event FROM events WHERE task_id = 'agent' AND revision = 1 AND event LIKE '%agent_runtime_reconciliation%'", [], |r| r.get(0)).unwrap();
     let event: serde_json::Value = serde_json::from_str(&event).unwrap();
