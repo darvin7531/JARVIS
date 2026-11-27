@@ -247,6 +247,11 @@ pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'stat
         owner.task.clone(),
         owner.revision,
     );
+    #[cfg(test)]
+    if FAIL_VERIFICATION.with(|flag| flag.get()) {
+        let db = rusqlite::Connection::open(owner.store.join("jarvis.sqlite3")).unwrap();
+        db.execute_batch("CREATE TRIGGER test_reject_read_outcome BEFORE INSERT ON events WHEN NEW.event LIKE '%tool_execution_outcome%' BEGIN SELECT RAISE(ABORT, 'test outcome failure'); END; CREATE TRIGGER test_reject_checkpoint BEFORE INSERT ON events WHEN NEW.event LIKE '%checkpoint%' BEGIN SELECT RAISE(ABORT, 'test checkpoint failure'); END;").unwrap();
+    }
     let observed = broker.call_cancellable(&read, &cancelled);
     drop(broker);
     let mut store = SqliteStore::open(&owner.store).map_err(|_| "agent_verification_incomplete")?;
@@ -355,12 +360,40 @@ pub fn run() -> Result<(), &'static str> {
 #[cfg(test)]
 thread_local! {
     static FAIL_OUTCOME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_VERIFICATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn verification_uncertainty_survives_checkpoint_store_failure() {
+        let path = std::env::temp_dir().join(format!("agent-read-uncertain-{}", std::process::id()));
+        let mut store = SqliteStore::create(&path).unwrap();
+        store.create_task(&Task { id: "task".into(), version: 1, title: "test".into() }, "created", &[]).unwrap();
+        store.initialize_tool_budget(4).unwrap();
+        let expires = SystemTime::now() + Duration::from_secs(300);
+        let request = |tool: &str, text: &str| ToolRequest { tool: tool.into(), action: tool.into(), resource: "mock/item".into(), data_class: DataClass::Public, arguments: json!({"text":text}) };
+        store.issue_tool_approval("write", "task", 1, &request("write", "value"), expires).unwrap();
+        store.issue_tool_approval("read", "task", 1, &request("read", ""), expires).unwrap();
+        drop(store);
+        let owner = json!({"store":path, "task":"task", "revision":1, "approval":"write", "read_approval":"read", "resource":"mock/item", "data_class":"public", "permitted_text":"value", "expected":"value", "expires_unix":expires.duration_since(UNIX_EPOCH).unwrap().as_secs(), "context":"test"});
+        let owner_path = path.join("owner.json");
+        let proposal_path = path.join("proposal.json");
+        std::fs::write(&owner_path, owner.to_string()).unwrap();
+        std::fs::write(&proposal_path, serde_json::to_string(&request("write", "value")).unwrap()).unwrap();
+        FAIL_VERIFICATION.with(|flag| flag.set(true));
+        let result = run_owner(owner_path.as_os_str(), proposal_path.as_os_str());
+        FAIL_VERIFICATION.with(|flag| flag.set(false));
+        let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
+        let state: (String, i64, i64, i64) = db.query_row("SELECT (SELECT value FROM mock_state WHERE resource = 'mock/item'), (SELECT pending FROM tool_executions WHERE approval_id = 'read'), (SELECT consumed FROM tool_approvals WHERE id = 'read'), (SELECT used FROM tool_budget)", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
+        assert_eq!(state, ("value".into(), 1, 1, 2));
+        assert_eq!(result, Err("agent_verification_uncertain"));
+        drop(db);
+        std::fs::remove_dir_all(path).unwrap();
+    }
 
     #[test]
     fn post_dispatch_outcome_failure_is_uncertain_and_never_replayed() {
