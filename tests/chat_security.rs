@@ -207,3 +207,158 @@ fn length_finish_reports_usage_and_budget_error() {
         b"{\"input_tokens\":2,\"output_tokens\":3}\n{\"error\":\"budget_exceeded\"}\n"
     );
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn inherited_stdout_flags_remain_unchanged() {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let path = config(listener.local_addr().unwrap().port(), 5, "shared-flags");
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut buf = [0; 4096];
+        let _ = socket.read(&mut buf);
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let line = format!(
+            "{{\"response\":\"{}\",\"done\":false}}\n",
+            "x".repeat(200000)
+        );
+        let _ = socket.write_all(line.as_bytes());
+        thread::sleep(Duration::from_secs(2));
+    });
+    let mut fds = [0; 2];
+    assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+    let _reader = unsafe { fs::File::from_raw_fd(fds[0]) };
+    let writer = unsafe { fs::File::from_raw_fd(fds[1]) };
+    let fd = writer.as_raw_fd();
+    let mut child = Guard(
+        Command::new(env!("CARGO_BIN_EXE_jarvis"))
+            .args(["chat", "--config", path.to_str().unwrap(), "test"])
+            .stdout(Stdio::from(writer.try_clone().unwrap()))
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    thread::sleep(Duration::from_millis(500));
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    assert_eq!(
+        flags & libc::O_NONBLOCK,
+        0,
+        "shared stdout became nonblocking"
+    );
+    child.0.kill().unwrap();
+    server.join().unwrap();
+    fs::remove_file(path).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn stdin_without_eof_respects_timeout_and_signal() {
+    for (signal, timeout) in [(false, 1), (true, 10)] {
+        let path = config(
+            1,
+            timeout,
+            if signal {
+                "stdin-signal"
+            } else {
+                "stdin-timeout"
+            },
+        );
+        let mut child = Guard(
+            Command::new(env!("CARGO_BIN_EXE_jarvis"))
+                .args([
+                    "chat",
+                    "--config",
+                    path.to_str().unwrap(),
+                    "--data",
+                    "sensitive",
+                    "--stdin",
+                ])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        thread::sleep(Duration::from_millis(300));
+        if signal {
+            assert_eq!(unsafe { libc::kill(child.0.id() as i32, libc::SIGINT) }, 0);
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while child.0.try_wait().unwrap().is_none() {
+            assert!(Instant::now() < deadline, "stdin without EOF hung");
+            thread::sleep(Duration::from_millis(20));
+        }
+        let mut err = String::new();
+        child
+            .0
+            .stderr
+            .take()
+            .unwrap()
+            .read_to_string(&mut err)
+            .unwrap();
+        assert!(
+            err.contains(if signal { "cancelled" } else { "timeout" }),
+            "{err}"
+        );
+        fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn sensitive_terminal_input_is_rejected() {
+    use std::os::fd::FromRawFd;
+    let path = config(1, 5, "tty");
+    let (mut master, mut slave) = (0, 0);
+    assert_eq!(
+        unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        },
+        0
+    );
+    let _master = unsafe { fs::File::from_raw_fd(master) };
+    let slave = unsafe { fs::File::from_raw_fd(slave) };
+    let mut child = Guard(
+        Command::new(env!("CARGO_BIN_EXE_jarvis"))
+            .args([
+                "chat",
+                "--config",
+                path.to_str().unwrap(),
+                "--data",
+                "sensitive",
+                "--stdin",
+            ])
+            .stdin(Stdio::from(slave))
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while child.0.try_wait().unwrap().is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "sensitive terminal input was not rejected"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    let mut err = String::new();
+    child
+        .0
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut err)
+        .unwrap();
+    assert!(err.contains("sensitive_tty"), "{err}");
+    fs::remove_file(path).unwrap();
+}
