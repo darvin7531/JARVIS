@@ -142,7 +142,7 @@ pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'stat
             }
         }
         let mut store = SqliteStore::open(&owner.store).map_err(|_| "agent_storage")?;
-        store.append_event(&owner.task, &serde_json::json!({"type":"checkpoint", "status":"thinking", "steps":index + 1, "failures":failures}).to_string()).map_err(|_| "agent_storage")?;
+        store.append_event_at_revision(&owner.task, owner.revision, &serde_json::json!({"type":"checkpoint", "status":"thinking", "steps":index + 1, "failures":failures}).to_string()).map_err(|_| "agent_storage")?;
     }
     let proposal = proposal.ok_or("agent_steps")?;
     if cancelled.load(Ordering::Relaxed) {
@@ -174,8 +174,9 @@ pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'stat
     if outcome.is_err() {
         let mut store = SqliteStore::open(&owner.store).map_err(|_| "agent_storage")?;
         store
-            .append_event(
+            .append_event_at_revision(
                 &owner.task,
+                owner.revision,
                 r#"{"type":"checkpoint","status":"denied_or_failed"}"#,
             )
             .map_err(|_| "agent_storage")?;
@@ -208,22 +209,18 @@ pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'stat
         owner.task.clone(),
         owner.revision,
     );
-    if cancelled.load(Ordering::Relaxed) {
-        return Err("cancelled");
-    }
-    let observed = broker
-        .call_cancellable(&read, &cancelled)
-        .map_err(|_| "agent_verify")?;
+    let observed = broker.call_cancellable(&read, &cancelled);
     drop(broker);
     let mut store = SqliteStore::open(&owner.store).map_err(|_| "agent_storage")?;
-    let status = if observed == owner.expected {
+    let status = if observed.as_ref().is_ok_and(|value| value == &owner.expected) {
         "verified"
     } else {
         "verification_failed"
     };
     store
-        .append_event(
+        .append_event_at_revision(
             &owner.task,
+            owner.revision,
             &serde_json::json!({"type":"checkpoint", "status":status}).to_string(),
         )
         .map_err(|_| "agent_storage")?;

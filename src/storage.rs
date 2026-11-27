@@ -628,6 +628,22 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub fn append_event_at_revision(
+        &mut self,
+        task_id: &str,
+        revision: i64,
+        event: &str,
+    ) -> Result<(), StorageError> {
+        let changed = self.db.execute(
+            "INSERT INTO events (task_id, event, revision, occurred_at) SELECT id, ?3, version, strftime('%Y-%m-%dT%H:%M:%fZ', 'now') FROM tasks WHERE id = ?1 AND version = ?2",
+            params![task_id, revision, event],
+        )?;
+        if changed != 1 {
+            return Err(StorageError::OperationFailed);
+        }
+        Ok(())
+    }
+
     pub fn events(&self, task_id: &str) -> Result<Vec<String>, StorageError> {
         let mut statement = self
             .db
