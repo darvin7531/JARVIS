@@ -120,7 +120,13 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
             .into_string()
             .map_err(|_| "invalid_arguments")?;
         match arg.as_str() {
-            "--tier" => selected_tier = Some(tier(&value).ok_or("invalid_arguments")?),
+            "--tier" => {
+                selected_tier = Some(if value == "t0" {
+                    Tier::T0
+                } else {
+                    tier(&value).ok_or("invalid_arguments")?
+                })
+            }
             "--model" => manual = Some(value),
             "--require" => required = capability(&value).ok_or("invalid_arguments")?,
             "--data" => class = data(&value).ok_or("invalid_arguments")?,
@@ -217,6 +223,13 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
         return Err("capability_unavailable");
     }
     let selected_tier = selected_tier.unwrap_or_else(|| jarvis::inference::classify(&prompt));
+    if selected_tier == Tier::T0 {
+        if manual.is_some() || prompt != "ping" {
+            return Err("invalid_arguments");
+        }
+        println!("pong");
+        return Ok(());
+    }
     let mut caps = Vec::new();
     let mut classes = Vec::new();
     let mut tiers = Vec::new();
