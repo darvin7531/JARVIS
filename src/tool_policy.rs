@@ -126,7 +126,7 @@ impl Broker {
         }
         let (store, id, task, revision) = self.approval.as_mut().ok_or(BrokerError::Denied)?;
         if !store
-            .consume_tool_approval(id, task, *revision, request)
+            .consume_tool_approval(id, task, *revision, request, contract.expires_at)
             .unwrap_or(false)
         {
             return Err(BrokerError::Denied);

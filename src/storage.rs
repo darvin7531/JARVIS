@@ -223,6 +223,7 @@ impl SqliteStore {
         task: &str,
         revision: i64,
         request: &crate::tool_policy::ToolRequest,
+        contract_expires: std::time::SystemTime,
     ) -> Result<bool, StorageError> {
         let request = serde_json::to_string(request).map_err(|_| StorageError::OperationFailed)?;
         let tx = self
