@@ -793,3 +793,30 @@ fn reopen_rejects_integrity_errors_without_repairing_data() {
     drop(db);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn backup_rejects_shared_writable_parent() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!("jarvis-backup-parent-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir(&root).unwrap();
+    let store = SqliteStore::create(&root.join("source")).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o777)).unwrap();
+    assert!(store.backup(&root.join("snapshot")).is_err());
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn restored_backup_blocks_budget_even_without_pending_reservations() {
+    let root = std::env::temp_dir().join(format!("jarvis-backup-budget-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir(&root).unwrap();
+    let mut store = SqliteStore::create(&root.join("source")).unwrap();
+    let id = store.reserve_tokens(100, 10).unwrap().unwrap();
+    store.settle_tokens(id, 5).unwrap();
+    store.backup(&root.join("snapshot")).unwrap();
+    let mut restored = SqliteStore::open(&root.join("snapshot")).unwrap();
+    assert!(restored.reserve_tokens(100, 1).unwrap().is_none());
+    std::fs::remove_dir_all(root).unwrap();
+}
