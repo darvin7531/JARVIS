@@ -357,3 +357,43 @@ fn malformed_and_unverified_versions_fail_closed() {
         server.join().unwrap();
     }
 }
+
+#[test]
+fn stalled_version_check_obeys_deadline_and_cancellation() {
+    for cancel in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0; 4096];
+            let n = stream.read(&mut buf).unwrap();
+            assert!(buf[..n].starts_with(b"GET /api/version "));
+            ready_tx.send(()).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            assert_eq!(stream.read(&mut buf).unwrap(), 0);
+        });
+        let flag = AtomicBool::new(false);
+        let mut r = request();
+        r.timeout = Duration::from_millis(250);
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                ready_rx.recv().unwrap();
+                if cancel {
+                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            });
+            assert_eq!(
+                Ollama { port }.generate(&r, &flag, &mut |_| {}),
+                Err(if cancel {
+                    Error::Cancelled
+                } else {
+                    Error::Timeout
+                })
+            );
+        });
+        server.join().unwrap();
+    }
+}
