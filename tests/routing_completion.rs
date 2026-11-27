@@ -21,7 +21,7 @@ fn configured_chat_rejects_vision_for_text_only_transport() {
 
 #[test]
 fn task_prefix_rules_select_tiers() {
-    use jarvis::inference::{classify, Tier};
+    use jarvis::inference::{Tier, classify};
     assert_eq!(classify("hello"), Tier::T1);
     assert_eq!(classify("code: fix it"), Tier::T2);
     assert_eq!(classify(" complex: review it"), Tier::T3);
@@ -68,7 +68,7 @@ fn configured_cli_streams_and_forwards_limits() {
         thread::sleep(Duration::from_millis(700));
         socket
             .write_all(
-                b"{\"response\":\"last\",\"done\":true,\"prompt_eval_count\":2,\"eval_count\":3}\n",
+                b"{\"response\":\"last\",\"done\":true,\"done_reason\":\"stop\",\"prompt_eval_count\":2,\"eval_count\":3}\n",
             )
             .unwrap();
     });
@@ -164,11 +164,13 @@ fn signal_cancels_cli_and_reports_missing_usage() {
         .unwrap();
     assert_eq!(first, "partial\n");
     let start = Instant::now();
-    assert!(Command::new("kill")
-        .args(["-TERM", &child.id().to_string()])
-        .status()
-        .unwrap()
-        .success());
+    assert!(
+        Command::new("kill")
+            .args(["-TERM", &child.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
     let output = child.wait_with_output().unwrap();
     assert!(start.elapsed() < Duration::from_secs(1));
     assert!(!output.status.success());

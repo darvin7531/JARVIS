@@ -40,7 +40,7 @@ fn serve(body: &'static str, delay: Duration) -> u16 {
 #[test]
 fn fragmented_ndjson_and_usage() {
     let port = serve(
-        "{\"response\":\"Hi\",\"done\":false}\n{\"response\":\"!\",\"done\":true,\"prompt_eval_count\":2,\"eval_count\":3}\n",
+        "{\"response\":\"Hi\",\"done\":false}\n{\"response\":\"!\",\"done\":true,\"done_reason\":\"stop\",\"prompt_eval_count\":2,\"eval_count\":3}\n",
         Duration::ZERO,
     );
     let mut text = String::new();
@@ -118,7 +118,7 @@ fn actual_ollama_smoke_when_enabled() {
 #[test]
 fn terminal_text_is_not_emitted_when_usage_is_invalid() {
     let port = serve(
-        "{\"response\":\"unsafe\",\"done\":true,\"prompt_eval_count\":1,\"eval_count\":9}\n",
+        "{\"response\":\"unsafe\",\"done\":true,\"done_reason\":\"stop\",\"prompt_eval_count\":1,\"eval_count\":9}\n",
         Duration::ZERO,
     );
     let mut text = String::new();
@@ -163,7 +163,7 @@ fn incomplete_http_body_is_transport_error_even_after_done() {
         let (mut stream, _) = listener.accept().unwrap();
         let mut buf = [0; 4096];
         let _ = stream.read(&mut buf);
-        let body = "{\"response\":\"ok\",\"done\":true,\"prompt_eval_count\":1,\"eval_count\":1}\n";
+        let body = "{\"response\":\"ok\",\"done\":true,\"done_reason\":\"stop\",\"prompt_eval_count\":1,\"eval_count\":1}\n";
         write!(
             stream,
             "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -181,7 +181,7 @@ fn incomplete_http_body_is_transport_error_even_after_done() {
 #[test]
 fn missing_usage_rejects_completion_after_provisional_chunk() {
     let port = serve(
-        "{\"response\":\"first\",\"done\":false}\n{\"response\":\"last\",\"done\":true}\n",
+        "{\"response\":\"first\",\"done\":false}\n{\"response\":\"last\",\"done\":true,\"done_reason\":\"stop\"}\n",
         Duration::ZERO,
     );
     let mut text = String::new();
@@ -225,7 +225,7 @@ fn sends_requested_token_limit_and_handles_fragmented_unicode() {
                 }
             }
         }
-        let body = "{\"response\":\"é\",\"done\":true,\"prompt_eval_count\":1,\"eval_count\":1}\n";
+        let body = "{\"response\":\"é\",\"done\":true,\"done_reason\":\"stop\",\"prompt_eval_count\":1,\"eval_count\":1}\n";
         write!(
             stream,
             "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",

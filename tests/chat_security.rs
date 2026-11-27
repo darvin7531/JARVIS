@@ -70,7 +70,7 @@ fn sensitive_stdin_reaches_provider() {
         socket.read_exact(&mut body).unwrap();
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["prompt"], "secret from stdin");
-        socket.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"response\":\"ok\",\"done\":true,\"prompt_eval_count\":1,\"eval_count\":1}\n").unwrap();
+        socket.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"response\":\"ok\",\"done\":true,\"done_reason\":\"stop\",\"prompt_eval_count\":1,\"eval_count\":1}\n").unwrap();
     });
     let mut child = Guard(
         Command::new(env!("CARGO_BIN_EXE_jarvis"))
@@ -153,11 +153,13 @@ fn full_stdout_pipe_respects_sigint_and_timeout() {
         rx.recv_timeout(Duration::from_secs(4)).unwrap();
         thread::sleep(Duration::from_millis(300));
         if signal {
-            assert!(Command::new("kill")
-                .args(["-INT", &child.0.id().to_string()])
-                .status()
-                .unwrap()
-                .success());
+            assert!(
+                Command::new("kill")
+                    .args(["-INT", &child.0.id().to_string()])
+                    .status()
+                    .unwrap()
+                    .success()
+            );
         }
         let deadline = Instant::now() + Duration::from_secs(3);
         while child.0.try_wait().unwrap().is_none() {
@@ -394,7 +396,7 @@ fn stdout_pipe_without_reader_fails() {
                 Ok((mut socket, _)) => {
                     let mut buf = [0; 4096];
                     let _ = socket.read(&mut buf);
-                    let _ = socket.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"response\":\"x\",\"done\":true,\"prompt_eval_count\":1,\"eval_count\":1}\n");
+                    let _ = socket.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"response\":\"x\",\"done\":true,\"done_reason\":\"stop\",\"prompt_eval_count\":1,\"eval_count\":1}\n");
                     break;
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {

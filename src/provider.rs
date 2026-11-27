@@ -202,7 +202,6 @@ impl Provider for Ollama {
                         };
                         if done {
                             match value.get("done_reason") {
-                                None => {}
                                 Some(reason) if reason.as_str() == Some("stop") => {}
                                 Some(reason) if reason.as_str() == Some("length") => {
                                     incomplete = true
