@@ -98,3 +98,27 @@ fn real_ollama_budgeted_cli() {
     drop(db);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+#[ignore]
+fn real_ollama_rejects_oversized_prompt() {
+    let root = std::env::temp_dir().join(format!("jarvis-oversized-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    drop(SqliteStore::create(&root).unwrap());
+    let config = root.join("config.json");
+    fs::write(&config, serde_json::json!({
+        "models":[{"name":"smollm2:135m-instruct-q4_0","tier":"t1","capabilities":["text"],"allowed_data":["public"],"port":11434}],
+        "budget":{"workspace":root,"limit_tokens":2176,"max_input_tokens":2048}
+    }).to_string()).unwrap();
+    let prompt = "hello ".repeat(12000);
+    let result = Command::new(env!("CARGO_BIN_EXE_jarvis"))
+        .args(["chat", "--config"])
+        .arg(&config)
+        .arg(&prompt)
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(result.stdout.is_empty());
+    assert_eq!(result.stderr, b"{\"usage\":null}\n{\"error\":\"inference_failed\"}\n");
+    fs::remove_dir_all(root).unwrap();
+}

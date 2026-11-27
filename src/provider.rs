@@ -114,7 +114,7 @@ impl Ollama {
         max_input_tokens: Option<u32>,
     ) -> Result<Usage, Error> {
         validate(r, cancelled)?;
-        let mut payload = serde_json::json!({"model":r.model,"prompt":r.prompt,"stream":true,"options":{"num_predict":r.max_tokens}});
+        let mut payload = serde_json::json!({"model":r.model,"prompt":r.prompt,"stream":true,"truncate":false,"options":{"num_predict":r.max_tokens}});
         if let Some(bound) = max_input_tokens {
             payload["options"]["num_ctx"] = bound.into();
         }

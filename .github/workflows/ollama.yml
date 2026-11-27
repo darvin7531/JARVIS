@@ -39,6 +39,18 @@ jobs:
           ' "$RUNNER_TEMP/chat.json"
       - name: Run budgeted real-model CLI
         run: cargo test --locked --test budget_safety real_ollama_budgeted_cli -- --ignored
+      - name: Confirm oversized prompt is accepted when truncation is enabled
+        run: |
+          python3 -c '
+          import json, urllib.request
+          data = json.dumps({"model":"smollm2:135m-instruct-q4_0", "prompt":"hello " * 12000, "stream":False, "truncate":True, "options":{"num_ctx":2048,"num_predict":1}}).encode()
+          req = urllib.request.Request("http://127.0.0.1:11434/api/generate", data=data, headers={"Content-Type":"application/json"})
+          with urllib.request.urlopen(req, timeout=150) as response:
+              result = json.load(response)
+          assert result["done"] and 0 < result["prompt_eval_count"] <= 2048, result
+          '
+      - name: Reject oversized prompt through budgeted CLI
+        run: cargo test --locked --test budget_safety real_ollama_rejects_oversized_prompt -- --ignored
       - name: Stop runner
         if: always()
         run: docker rm -f ollama || true
