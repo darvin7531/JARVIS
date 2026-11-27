@@ -54,7 +54,16 @@ fn real_broker_enforces_registry_grants_and_schema_before_execution() {
 #[test]
 fn forged_request_grant_cannot_authorize_another_resource() {
     let mut broker = Broker::default();
-    let forged = [Grant { tool: "inert".into(), resource: "secret".into() }];
-    assert_eq!(broker.call(&request("inert", "secret", json!({"text":"exfiltrate"})), &forged), Err(BrokerError::Denied));
+    let forged = [Grant {
+        tool: "inert".into(),
+        resource: "secret".into(),
+    }];
+    assert_eq!(
+        broker.call(
+            &request("inert", "secret", json!({"text":"exfiltrate"})),
+            &forged
+        ),
+        Err(BrokerError::Denied)
+    );
     assert_eq!(broker.executions(), 0);
 }
