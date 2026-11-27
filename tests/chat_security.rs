@@ -20,7 +20,7 @@ fn config(port: u16, timeout: u64, name: &str) -> std::path::PathBuf {
         "jarvis-security-{name}-{}.json",
         std::process::id()
     ));
-    fs::write(&path, format!(r#"{{"limits":{{"timeout_seconds":{timeout},"max_output_bytes":524288}},"models":[{{"name":"test","tier":"t1","capabilities":["text"],"allowed_data":["sensitive"],"port":{port}}}]}}"#)).unwrap();
+    fs::write(&path, format!(r#"{{"limits":{{"timeout_seconds":{timeout},"max_output_bytes":524288}},"models":[{{"name":"test","tier":"t1","capabilities":["text"],"allowed_data":["sensitive","public"],"port":{port}}}]}}"#)).unwrap();
     path
 }
 
@@ -143,21 +143,13 @@ fn full_stdout_pipe_respects_sigint_and_timeout() {
         });
         let mut child = Guard(
             Command::new(env!("CARGO_BIN_EXE_jarvis"))
-                .args([
-                    "chat",
-                    "--config",
-                    path.to_str().unwrap(),
-                    "--data",
-                    "sensitive",
-                    "--stdin",
-                ])
-                .stdin(Stdio::piped())
+                .args(["chat", "--config", path.to_str().unwrap(), "test"])
+                .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
                 .unwrap(),
         );
-        child.0.stdin.take().unwrap().write_all(b"test").unwrap();
         rx.recv_timeout(Duration::from_secs(4)).unwrap();
         thread::sleep(Duration::from_millis(300));
         if signal {
