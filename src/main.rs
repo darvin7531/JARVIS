@@ -71,6 +71,16 @@ fn run() -> Result<(), Error> {
     if args.peek().is_some_and(|arg| arg == "agent") {
         args.next();
         let mode = args.next().ok_or(Error::InvalidArguments)?;
+        if mode == "approve" {
+            if args.next().is_none_or(|arg| arg != "--input") {
+                return Err(Error::InvalidArguments);
+            }
+            let input = args.next().ok_or(Error::InvalidArguments)?;
+            if args.next().is_some() {
+                return Err(Error::InvalidArguments);
+            }
+            return agent::approve(&input).map_err(Error::Chat);
+        }
         if mode == "--owner" {
             let owner = args.next().ok_or(Error::InvalidArguments)?;
             if args.next().is_none_or(|arg| arg != "--mock-response") {
