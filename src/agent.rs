@@ -117,6 +117,14 @@ fn approval_fd(fd: i32, output: bool) -> Result<std::fs::File, &'static str> {
     if !matches!(mode, libc::S_IFIFO | libc::S_IFREG | libc::S_IFCHR) {
         return Err("agent_io");
     }
+    if mode == libc::S_IFREG {
+        use std::os::fd::FromRawFd;
+        let copy = unsafe { libc::dup(fd) };
+        if copy < 0 {
+            return Err("agent_io");
+        }
+        return Ok(unsafe { std::fs::File::from_raw_fd(copy) });
+    }
     std::fs::OpenOptions::new()
         .read(!output)
         .write(output)
