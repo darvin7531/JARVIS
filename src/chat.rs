@@ -297,26 +297,38 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
             allowed_data: &classes[i],
         })
         .collect();
-    let selected = route(&profiles, selected_tier, manual.as_deref(), required, class).map_err(
+    // Validate the original selection first, including duplicate manual names and policy.
+    let first = route(&profiles, selected_tier, manual.as_deref(), required, class).map_err(
         |e| match e {
             RouteError::ModelUnavailable => "model_unavailable",
             RouteError::CapabilityUnavailable => "capability_unavailable",
             RouteError::DataNotAllowed => "data_not_allowed",
         },
     )?;
-    let index = profiles
+    let index = if config.models[profiles
         .iter()
-        .position(|p| std::ptr::eq(p, selected))
-        .ok_or("invalid_config")?;
-    if !config.models[index].trusted_no_truncation {
+        .position(|p| std::ptr::eq(p, first))
+        .ok_or("invalid_config")?]
+    .trusted_no_truncation
+    {
+        profiles
+            .iter()
+            .position(|p| std::ptr::eq(p, first))
+            .ok_or("invalid_config")?
+    } else if manual.is_some() {
         return Err("unsupported_runtime");
-    }
-    let req = Request {
-        model: selected.name,
-        prompt: &prompt,
-        max_tokens: config.limits.max_tokens,
-        max_output_bytes: config.limits.max_output_bytes,
-        timeout: timeout.checked_sub(started.elapsed()).ok_or("timeout")?,
+    } else {
+        profiles
+            .iter()
+            .enumerate()
+            .find(|(i, p)| {
+                config.models[*i].trusted_no_truncation
+                    && p.tier == selected_tier
+                    && p.capabilities.contains(&required)
+                    && p.allowed_data.contains(&class)
+            })
+            .map(|(i, _)| i)
+            .ok_or("unsupported_runtime")?
     };
     let budget = config.budget.as_ref().ok_or("invalid_config")?;
     let mut reservation = {
@@ -335,6 +347,29 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
             .ok_or("budget_exceeded")?;
         (store, id)
     };
+    // Admission can block. Never hand a stale timeout or a cancelled request to curl.
+    let remaining = timeout
+        .checked_sub(started.elapsed())
+        .filter(|d| !d.is_zero());
+    if cancelled.load(Ordering::Relaxed) || remaining.is_none() {
+        reservation
+            .0
+            .settle_tokens(reservation.1, 0)
+            .map_err(|_| "budget_storage_failed")?;
+        return Err(if cancelled.load(Ordering::Relaxed) {
+            "cancelled"
+        } else {
+            "timeout"
+        });
+    }
+    let req = Request {
+        model: &config.models[index].name,
+        prompt: &prompt,
+        max_tokens: config.limits.max_tokens,
+        max_output_bytes: config.limits.max_output_bytes,
+        timeout: remaining.ok_or("timeout")?,
+    };
+    let tty = unsafe { libc::isatty(fd) } == 1;
     let mut failure = None;
     let result = Ollama {
         port: config.models[index].port,
@@ -344,6 +379,22 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
         &req,
         &cancelled,
         &mut |text| {
+            let escaped;
+            let text = if tty {
+                escaped = text
+                    .chars()
+                    .map(|c| {
+                        if c.is_control() && c != '\n' && c != '\t' {
+                            format!("\\u{{{:x}}}", c as u32)
+                        } else {
+                            c.to_string()
+                        }
+                    })
+                    .collect::<String>();
+                escaped.as_str()
+            } else {
+                text
+            };
             if let Err(code) = write_output(fd, text.as_bytes(), &cancelled, started, timeout) {
                 failure = Some(code);
                 cancelled.store(true, Ordering::Relaxed);
