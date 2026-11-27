@@ -25,7 +25,7 @@ jobs:
           cargo build --locked
           export JARVIS_SMOKE_WORKSPACE="$RUNNER_TEMP/jarvis-workspace"
           cargo test --locked --test budget_safety create_smoke_workspace -- --ignored
-          printf '%s\n' "{\"models\":[{\"name\":\"smollm2:135m-instruct-q4_0\",\"tier\":\"t1\",\"capabilities\":[\"text\"],\"allowed_data\":[\"public\"],\"trusted_no_truncation\":true,\"port\":11434}],\"budget\":{\"workspace\":\"$JARVIS_SMOKE_WORKSPACE\",\"limit_tokens\":2176,\"max_input_tokens\":2048}}" > "$RUNNER_TEMP/chat.json"
+          printf '%s\n' "{\"models\":[{\"name\":\"jarvis-smoke\",\"tier\":\"t1\",\"capabilities\":[\"text\"],\"allowed_data\":[\"public\"],\"trusted_no_truncation\":true,\"port\":11434}],\"budget\":{\"workspace\":\"$JARVIS_SMOKE_WORKSPACE\",\"limit_tokens\":2176,\"max_input_tokens\":2048}}" > "$RUNNER_TEMP/chat.json"
           timeout 150s python3 -c '
           import subprocess, sys
           p = subprocess.Popen(["target/debug/jarvis", "chat", "--config", sys.argv[1], "Say hello in one word."], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -43,7 +43,7 @@ jobs:
           print("\nCLI usage:", usage)
           ' "$RUNNER_TEMP/chat.json"
       - name: Run budgeted real-model CLI
-        run: cargo test --locked --test budget_safety real_ollama_budgeted_cli -- --ignored
+        run: for i in 1 2 3; do cargo test --locked --test budget_safety real_ollama_budgeted_cli -- --ignored --exact; done
       - name: Confirm oversized prompt is accepted when truncation is enabled
         run: |
           python3 -c '

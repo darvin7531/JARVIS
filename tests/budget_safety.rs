@@ -71,7 +71,7 @@ fn real_ollama_budgeted_cli() {
     drop(SqliteStore::create(&root).unwrap());
     let config = root.join("config.json");
     fs::write(&config, serde_json::json!({
-        "models":[{"name":"smollm2:135m-instruct-q4_0","tier":"t1","capabilities":["text"],"allowed_data":["public"],"trusted_no_truncation":true,"port":11434}],
+        "models":[{"name":"jarvis-smoke","tier":"t1","capabilities":["text"],"allowed_data":["public"],"trusted_no_truncation":true,"port":11434}],
         "budget":{"workspace":root,"limit_tokens":2176,"max_input_tokens":2048}
     }).to_string()).unwrap();
     let result = Command::new(env!("CARGO_BIN_EXE_jarvis"))
