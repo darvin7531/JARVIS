@@ -22,3 +22,45 @@ fn configured_agent_reaches_shared_config_validation() {
     );
     std::fs::remove_dir_all(path).unwrap();
 }
+
+#[test]
+fn configured_proposals_require_complete_stream_and_exact_approval() {
+    use jarvis::storage::{SqliteStore, Task};
+    use jarvis::tool_policy::{DataClass, ToolRequest};
+    use std::{io::{Read, Write}, net::TcpListener, time::{Duration, SystemTime, UNIX_EPOCH}};
+    for (reason, proposed, succeeds) in [("stop", "approved", true), ("length", "approved", false), ("stop", "forged", false)] {
+        let root = std::env::temp_dir().join(format!("configured-agent-{}-{reason}-{proposed}", std::process::id()));
+        let mut store = SqliteStore::create(&root).unwrap();
+        store.create_task(&Task { id: "task".into(), version: 1, title: "test".into() }, "created", &[]).unwrap();
+        store.initialize_tool_budget(4).unwrap();
+        let expiry = SystemTime::now() + Duration::from_secs(300);
+        let request = |tool: &str, text: &str| ToolRequest { tool: tool.into(), action: tool.into(), resource: "mock/item".into(), data_class: DataClass::Public, arguments: json!({"text":text}) };
+        store.issue_tool_approval("write", "task", 1, &request("write", "approved"), expiry).unwrap();
+        store.issue_tool_approval("read", "task", 1, &request("read", ""), expiry).unwrap();
+        drop(store);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let owner = json!({"store":root, "task":"task", "revision":1, "approval":"write", "read_approval":"read", "resource":"mock/item", "data_class":"public", "permitted_text":"approved", "expected":"approved", "expires_unix":expiry.duration_since(UNIX_EPOCH).unwrap().as_secs(), "context":"produce a JSON proposal"});
+        let config = json!({"models":[{"name":"model", "tier":"t1", "capabilities":["text"], "allowed_data":["public"], "trusted_no_truncation":true, "port":port}], "limits":{"max_tokens":100}, "budget":{"workspace":root, "limit_tokens":1000, "max_input_tokens":200}});
+        let owner_path = root.join("owner.json");
+        let config_path = root.join("config.json");
+        std::fs::write(&owner_path, owner.to_string()).unwrap();
+        std::fs::write(&config_path, config.to_string()).unwrap();
+        let proposal = json!({"kind":"tool", "request":request("write", proposed)}).to_string();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0;4096];
+            assert!(stream.read(&mut buf).unwrap() > 0);
+            let body = format!("{}\n{}\n", json!({"response":proposal,"done":false}), json!({"response":"","done":true,"done_reason":reason,"prompt_eval_count":20,"eval_count":10}));
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}", body.len(), body).unwrap();
+        });
+        let output = Command::new(env!("CARGO_BIN_EXE_jarvis")).args(["agent", "--owner"]).arg(owner_path).arg("--config").arg(config_path).output().unwrap();
+        server.join().unwrap();
+        assert_eq!(output.status.success(), succeeds, "{}", String::from_utf8_lossy(&output.stderr));
+        let db = rusqlite::Connection::open(root.join("jarvis.sqlite3")).unwrap();
+        let count: i64 = db.query_row("SELECT count(*) FROM mock_state", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, i64::from(succeeds));
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}

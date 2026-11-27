@@ -258,40 +258,80 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
     };
     let fd = output.as_ref().map_or(1, AsRawFd::as_raw_fd);
     let tty = unsafe { libc::isatty(fd) } == 1;
-    configured_inference(&config, &prompt, selected_tier, manual.as_deref(), required, class, &cancelled, started, &mut |text| {
-        let escaped;
-        let text = if tty {
-            escaped = text.chars().map(|c| {
-                if c.is_control() && c != '\n' && c != '\t' {
-                    format!("\\u{{{:x}}}", c as u32)
-                } else {
-                    c.to_string()
-                }
-            }).collect::<String>();
-            escaped.as_str()
-        } else { text };
-        write_output(fd, text.as_bytes(), &cancelled, started, timeout)
-    })
+    configured_inference(
+        &config,
+        &prompt,
+        selected_tier,
+        manual.as_deref(),
+        required,
+        class,
+        &cancelled,
+        started,
+        &mut |text| {
+            let escaped;
+            let text = if tty {
+                escaped = text
+                    .chars()
+                    .map(|c| {
+                        if c.is_control() && c != '\n' && c != '\t' {
+                            format!("\\u{{{:x}}}", c as u32)
+                        } else {
+                            c.to_string()
+                        }
+                    })
+                    .collect::<String>();
+                escaped.as_str()
+            } else {
+                text
+            };
+            write_output(fd, text.as_bytes(), &cancelled, started, timeout)
+        },
+    )
 }
 
 pub fn agent_config(path: &std::ffi::OsStr) -> Result<Config, &'static str> {
     load_config(path)
 }
 
-pub fn agent_inference(config: &Config, prompt: &str, class: DataClass, cancelled: &Arc<AtomicBool>) -> Result<String, &'static str> {
+pub fn agent_inference(
+    config: &Config,
+    prompt: &str,
+    class: DataClass,
+    cancelled: &Arc<AtomicBool>,
+) -> Result<String, &'static str> {
     let mut output = String::new();
-    configured_inference(config, prompt, None, None, Capability::Text, class, cancelled, Instant::now(), &mut |chunk| {
-        output.push_str(chunk);
-        Ok(())
-    })?;
+    configured_inference(
+        config,
+        prompt,
+        None,
+        None,
+        Capability::Text,
+        class,
+        cancelled,
+        Instant::now(),
+        &mut |chunk| {
+            output.push_str(chunk);
+            Ok(())
+        },
+    )?;
     Ok(output)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn configured_inference(config: &Config, prompt: &str, selected_tier: Option<Tier>, manual: Option<&str>, required: Capability, class: DataClass, cancelled: &Arc<AtomicBool>, started: Instant, emit: &mut dyn FnMut(&str) -> Result<(), &'static str>) -> Result<(), &'static str> {
+fn configured_inference(
+    config: &Config,
+    prompt: &str,
+    selected_tier: Option<Tier>,
+    manual: Option<&str>,
+    required: Capability,
+    class: DataClass,
+    cancelled: &Arc<AtomicBool>,
+    started: Instant,
+    emit: &mut dyn FnMut(&str) -> Result<(), &'static str>,
+) -> Result<(), &'static str> {
     let timeout = Duration::from_secs(config.limits.timeout_seconds);
     let deadline = started.checked_add(timeout).ok_or("invalid_config")?;
-    let selected_tier = selected_tier.unwrap_or_else(|| jarvis::inference::classify(&prompt));
+    let selected_tier = selected_tier.unwrap_or_else(|| jarvis::inference::classify(prompt));
     if selected_tier == Tier::T0 {
         if manual.is_some() || prompt != "ping" {
             return Err("invalid_arguments");
@@ -337,13 +377,11 @@ fn configured_inference(config: &Config, prompt: &str, selected_tier: Option<Tie
         })
         .collect();
     // Validate the original selection first, including duplicate manual names and policy.
-    let first = route(&profiles, selected_tier, manual, required, class).map_err(
-        |e| match e {
-            RouteError::ModelUnavailable => "model_unavailable",
-            RouteError::CapabilityUnavailable => "capability_unavailable",
-            RouteError::DataNotAllowed => "data_not_allowed",
-        },
-    )?;
+    let first = route(&profiles, selected_tier, manual, required, class).map_err(|e| match e {
+        RouteError::ModelUnavailable => "model_unavailable",
+        RouteError::CapabilityUnavailable => "capability_unavailable",
+        RouteError::DataNotAllowed => "data_not_allowed",
+    })?;
     let index = if config.models[profiles
         .iter()
         .position(|p| std::ptr::eq(p, first))

@@ -94,7 +94,8 @@ fn run() -> Result<(), Error> {
                 agent::run_configured(&owner, &input)
             } else {
                 Err("invalid_arguments")
-            }.map_err(Error::Chat);
+            }
+            .map_err(Error::Chat);
         }
         if mode != "--mock"
             || args.next().is_none_or(|arg| arg != "diagnose")

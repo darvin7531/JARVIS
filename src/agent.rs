@@ -129,7 +129,11 @@ pub fn run_configured(owner_file: &OsStr, config_file: &OsStr) -> Result<(), &'s
     run_owner_inner(owner_file, config_file, true)
 }
 
-fn run_owner_inner(owner_file: &OsStr, input_file: &OsStr, configured: bool) -> Result<(), &'static str> {
+fn run_owner_inner(
+    owner_file: &OsStr,
+    input_file: &OsStr,
+    configured: bool,
+) -> Result<(), &'static str> {
     let owner: Owner =
         serde_json::from_str(&bounded_file(owner_file)?).map_err(|_| "agent_input")?;
     let expires = UNIX_EPOCH
@@ -145,12 +149,17 @@ fn run_owner_inner(owner_file: &OsStr, input_file: &OsStr, configured: bool) -> 
         .map_err(|_| "agent_signal")?;
     // The process exits after this command; cancellation cannot retract a dispatched call.
     let _signals = (int, term);
-    let config = if configured { Some(crate::chat::agent_config(input_file)?) } else { None };
+    let config = if configured {
+        Some(crate::chat::agent_config(input_file)?)
+    } else {
+        None
+    };
     let responses = if configured {
         vec![serde_json::Value::Null; owner.max_steps as usize]
     } else {
         let response = bounded_file(input_file)?;
-        let scripted: serde_json::Value = serde_json::from_str(&response).map_err(|_| "agent_inference")?;
+        let scripted: serde_json::Value =
+            serde_json::from_str(&response).map_err(|_| "agent_inference")?;
         match scripted {
             serde_json::Value::Array(items) => items,
             item => vec![item],
@@ -193,7 +202,13 @@ fn run_owner_inner(owner_file: &OsStr, input_file: &OsStr, configured: bool) -> 
             let mut output = String::new();
             provider
                 .generate(&request, &cancelled, &mut |chunk| output.push_str(chunk))
-                .map_err(|_| if cancelled.load(Ordering::Relaxed) { "cancelled" } else { "agent_inference" })?;
+                .map_err(|_| {
+                    if cancelled.load(Ordering::Relaxed) {
+                        "cancelled"
+                    } else {
+                        "agent_inference"
+                    }
+                })?;
             output
         };
         // Legacy single-request input remains supported but never supplies authority.
