@@ -11,7 +11,7 @@ fn missing_budget_rejects_before_connecting() {
     listener.set_nonblocking(true).unwrap();
     let path = std::env::temp_dir().join(format!("jarvis-no-budget-{}.json", std::process::id()));
     fs::write(&path, serde_json::json!({
-        "models": [{"name":"model","tier":"t1","capabilities":["text"],"allowed_data":["public"],"port":listener.local_addr().unwrap().port()}],
+        "models": [{"name":"model","tier":"t1","capabilities":["text"],"allowed_data":["public"],"trusted_no_truncation":true,"port":listener.local_addr().unwrap().port()}],
         "limits": {"timeout_seconds":1}
     }).to_string()).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_jarvis"))
