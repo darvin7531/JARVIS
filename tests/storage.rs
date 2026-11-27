@@ -795,6 +795,30 @@ fn reopen_rejects_integrity_errors_without_repairing_data() {
 }
 
 #[test]
+fn backup_accepts_bare_relative_destination() {
+    const CHILD: &str = "JARVIS_RELATIVE_BACKUP_TEST";
+    if std::env::var_os(CHILD).is_some() {
+        let store = SqliteStore::create(std::path::Path::new("source")).unwrap();
+        store.backup(std::path::Path::new("snapshot")).unwrap();
+        assert!(store.backup(std::path::Path::new("snapshot")).is_err());
+        drop(store);
+        assert!(SqliteStore::open(std::path::Path::new("snapshot")).is_ok());
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("jarvis-relative-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    private_dir(&root);
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "backup_accepts_bare_relative_destination"])
+        .env(CHILD, "1")
+        .current_dir(&root)
+        .status()
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(status.success());
+}
+
+#[test]
 fn backup_rejects_shared_writable_parent() {
     use std::os::unix::fs::PermissionsExt;
     let root = std::env::temp_dir().join(format!("jarvis-backup-parent-{}", std::process::id()));
