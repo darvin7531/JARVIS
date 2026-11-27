@@ -102,8 +102,23 @@ impl Provider for Ollama {
         cancelled: &AtomicBool,
         emit: &mut dyn FnMut(&str),
     ) -> Result<Usage, Error> {
+        self.generate_bounded(r, cancelled, emit, None)
+    }
+}
+impl Ollama {
+    pub fn generate_bounded(
+        &self,
+        r: &Request<'_>,
+        cancelled: &AtomicBool,
+        emit: &mut dyn FnMut(&str),
+        max_input_tokens: Option<u32>,
+    ) -> Result<Usage, Error> {
         validate(r, cancelled)?;
-        let payload = serde_json::to_vec(&serde_json::json!({"model":r.model,"prompt":r.prompt,"stream":true,"options":{"num_predict":r.max_tokens}})).map_err(|_| Error::InvalidRequest)?;
+        let mut payload = serde_json::json!({"model":r.model,"prompt":r.prompt,"stream":true,"options":{"num_predict":r.max_tokens}});
+        if let Some(bound) = max_input_tokens {
+            payload["options"]["num_ctx"] = bound.into();
+        }
+        let payload = serde_json::to_vec(&payload).map_err(|_| Error::InvalidRequest)?;
         let mut child = ChildGuard(
             Command::new("curl")
                 .args([

@@ -1,5 +1,5 @@
 use jarvis::inference::{route, Capability, DataClass, ModelProfile, RouteError, Tier};
-use jarvis::provider::{Ollama, Provider, Request};
+use jarvis::provider::{Ollama, Request};
 use serde::Deserialize;
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use std::{
@@ -20,6 +20,14 @@ struct Config {
     models: Vec<Model>,
     #[serde(default)]
     limits: Limits,
+    budget: Option<Budget>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Budget {
+    workspace: std::path::PathBuf,
+    limit_tokens: u64,
+    max_input_tokens: u32,
 }
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -290,42 +298,80 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
         None
     };
     let fd = output.as_ref().map_or(1, AsRawFd::as_raw_fd);
+    let mut reservation = if let Some(budget) = &config.budget {
+        let amount = u64::from(budget.max_input_tokens) + u64::from(config.limits.max_tokens);
+        if amount > budget.limit_tokens {
+            return Err("budget_exceeded");
+        }
+        if budget.max_input_tokens == 0 || budget.limit_tokens > i64::MAX as u64 {
+            return Err("invalid_config");
+        }
+        let mut store = jarvis::storage::SqliteStore::open(&budget.workspace)
+            .map_err(|_| "budget_storage_failed")?;
+        let id = store
+            .reserve_tokens(budget.limit_tokens, amount)
+            .map_err(|_| "budget_storage_failed")?
+            .ok_or("budget_exceeded")?;
+        Some((store, id))
+    } else {
+        None
+    };
     let mut failure = None;
-    let usage = Ollama {
+    let result = Ollama {
         port: config.models[index].port,
     }
-    .generate(&req, &cancelled, &mut |text| {
-        let mut bytes = text.as_bytes();
-        while !bytes.is_empty() {
-            if cancelled.load(Ordering::Relaxed) {
-                break;
-            }
-            if started.elapsed() >= timeout {
-                failure = Some("timeout");
-                cancelled.store(true, Ordering::Relaxed);
-                break;
-            }
-            // SAFETY: bytes is valid for the provided length; fd is open stdout.
-            let n = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
-            if n > 0 {
-                bytes = &bytes[n as usize..];
-            } else if n < 0 {
-                let error = std::io::Error::last_os_error();
-                if error.kind() == std::io::ErrorKind::WouldBlock {
-                    std::thread::sleep(Duration::from_millis(10));
-                } else if error.kind() != std::io::ErrorKind::Interrupted {
+    .generate_bounded(
+        &req,
+        &cancelled,
+        &mut |text| {
+            let mut bytes = text.as_bytes();
+            while !bytes.is_empty() {
+                if cancelled.load(Ordering::Relaxed) {
+                    break;
+                }
+                if started.elapsed() >= timeout {
+                    failure = Some("timeout");
+                    cancelled.store(true, Ordering::Relaxed);
+                    break;
+                }
+                // SAFETY: bytes is valid for the provided length; fd is open stdout.
+                let n = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
+                if n > 0 {
+                    bytes = &bytes[n as usize..];
+                } else if n < 0 {
+                    let error = std::io::Error::last_os_error();
+                    if error.kind() == std::io::ErrorKind::WouldBlock {
+                        std::thread::sleep(Duration::from_millis(10));
+                    } else if error.kind() != std::io::ErrorKind::Interrupted {
+                        failure = Some("output_failed");
+                        cancelled.store(true, Ordering::Relaxed);
+                        break;
+                    }
+                } else {
                     failure = Some("output_failed");
                     cancelled.store(true, Ordering::Relaxed);
                     break;
                 }
-            } else {
-                failure = Some("output_failed");
-                cancelled.store(true, Ordering::Relaxed);
-                break;
             }
+        },
+        config.budget.as_ref().map(|b| b.max_input_tokens),
+    );
+    if let Some((store, id)) = &mut reservation {
+        let known = match &result {
+            Ok(usage) | Err(jarvis::provider::Error::Incomplete(usage)) => Some(usage),
+            _ => None,
+        };
+        if let Some(usage) = known {
+            let tokens = usage
+                .input_tokens
+                .checked_add(usage.output_tokens)
+                .ok_or("budget_storage_failed")?;
+            store
+                .settle_tokens(*id, tokens)
+                .map_err(|_| "budget_storage_failed")?;
         }
-    })
-    .map_err(|error| {
+    }
+    let usage = result.map_err(|error| {
         if let jarvis::provider::Error::Incomplete(ref usage) = error {
             eprintln!(
                 "{{\"input_tokens\":{},\"output_tokens\":{}}}",
