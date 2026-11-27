@@ -268,14 +268,38 @@ fn expired_and_mismatched_approvals_never_execute() {
 
 #[test]
 fn audit_write_failure_prevents_execution_and_preserves_approval() {
-    let path = std::env::temp_dir().join(format!("jarvis-tool-audit-failure-{}", std::process::id()));
+    let path = std::env::temp_dir().join(format!(
+        "jarvis-tool-audit-failure-{}",
+        std::process::id()
+    ));
     let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
-    store.issue_tool_approval("one", "task", 1, &request(), SystemTime::now() + Duration::from_secs(60)).unwrap();
+    store
+        .create_task(&jarvis::storage::Task {
+            id: "task".into(),
+            version: 1,
+            title: "test".into(),
+        })
+        .unwrap();
+    store
+        .issue_tool_approval(
+            "one",
+            "task",
+            1,
+            &request(),
+            SystemTime::now() + Duration::from_secs(60),
+        )
+        .unwrap();
     let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
     db.execute_batch("CREATE TRIGGER reject_tool_audit BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT, 'audit failed'); END;").unwrap();
     let mut broker = Broker::with_approval(contract(), store, "one".into(), "task".into(), 1);
     assert_eq!(broker.call(&request()), Err(BrokerError::Denied));
     assert_eq!(broker.executions(), 0);
-    let consumed: i64 = db.query_row("SELECT consumed FROM tool_approvals WHERE id = 'one'", [], |r| r.get(0)).unwrap();
+    let consumed: i64 = db
+        .query_row(
+            "SELECT consumed FROM tool_approvals WHERE id = 'one'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(consumed, 0);
 }
