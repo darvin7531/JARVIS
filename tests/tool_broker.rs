@@ -285,10 +285,7 @@ fn expired_and_mismatched_approvals_never_execute() {
 
 #[test]
 fn approval_rejected_after_task_revision_changes() {
-    let path = std::env::temp_dir().join(format!(
-        "jarvis-approval-stale-{}",
-        std::process::id()
-    ));
+    let path = std::env::temp_dir().join(format!("jarvis-approval-stale-{}", std::process::id()));
     let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
     create_task(&mut store);
     store
