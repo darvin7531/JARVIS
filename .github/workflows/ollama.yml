@@ -13,10 +13,10 @@ jobs:
           toolchain: 1.89.0
       - name: Start pinned Ollama and pull small model
         run: |
-          docker run -d --name ollama -p 127.0.0.1:11434:11434 ollama/ollama:0.6.8
+          docker run -d --name ollama -p 127.0.0.1:11434:11434 ollama/ollama@sha256:50ab2378567a62b811a2967759dd91f254864c3495cbe50576bd8a85bc6edd56
           for i in $(seq 1 60); do curl -fsS http://127.0.0.1:11434/ && break; sleep 1; done
           docker exec ollama ollama pull smollm2:135m-instruct-q4_0
-          docker exec ollama ollama list | grep -F dbc9f6c89cb0
+          curl -fsS http://127.0.0.1:11434/api/tags | python3 -c 'import json,sys; models=json.load(sys.stdin)["models"]; assert any(m["name"] == "smollm2:135m-instruct-q4_0" and m["digest"] == "dbc9f6c89cb0673427e7215f12b0e71f1bcc716b780ec71da36c8dc6d28ab591" for m in models), "unexpected model digest"'
       - name: Run real inference through CLI
         run: |
           cargo build --locked
