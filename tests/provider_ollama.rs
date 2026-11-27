@@ -152,9 +152,9 @@ fn truncated_budget_timeout_cancel_and_redacted_errors() {
 #[ignore = "requires a running Ollama server with the pinned smoke model"]
 fn actual_ollama_smoke_when_enabled() {
     let r = Request {
-        model: "smollm2:135m-instruct-q4_0",
+        model: "jarvis-smoke",
         prompt: "Say hello in one word.",
-        max_tokens: 16,
+        max_tokens: 128,
         max_output_bytes: 4096,
         deadline: std::time::Instant::now() + Duration::from_secs(120),
     };
@@ -168,7 +168,11 @@ fn actual_ollama_smoke_when_enabled() {
     })
     .unwrap();
     assert!(!text.trim().is_empty());
-    assert!(usage.input_tokens > 0 && usage.output_tokens > 0 && usage.output_tokens <= 16);
+    assert!(
+        usage.input_tokens > 0
+            && usage.output_tokens > 0
+            && usage.output_tokens <= u64::from(r.max_tokens)
+    );
 }
 
 #[test]
