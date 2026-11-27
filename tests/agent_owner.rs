@@ -250,6 +250,29 @@ fn missing_read_approval_records_failed_verification_without_replay() {
     std::fs::remove_dir_all(path).unwrap();
 }
 
+
+#[test]
+fn step_limit_survives_rerun() {
+    let path = std::env::temp_dir().join(format!("jarvis-owner-rerun-{}", std::process::id()));
+    let mut store = SqliteStore::create(&path).unwrap();
+    store.create_task(&Task { id: "task".into(), version: 1, title: "test".into() }, "created", &[]).unwrap();
+    drop(store);
+    let expires = SystemTime::now() + Duration::from_secs(300);
+    let owner = json!({"store":path, "task":"task", "revision":1, "approval":"write", "read_approval":"read", "resource":"mock/item", "data_class":"public", "permitted_text":"value", "expected":"value", "expires_unix":expires.duration_since(UNIX_EPOCH).unwrap().as_secs(), "context":"test", "max_steps":1});
+    let owner_path = path.join("owner.json");
+    let proposal_path = path.join("proposal.json");
+    std::fs::write(&owner_path, owner.to_string()).unwrap();
+    std::fs::write(&proposal_path, json!({"kind":"continue"}).to_string()).unwrap();
+    let run = || Command::new(env!("CARGO_BIN_EXE_jarvis")).arg("agent").arg("--owner").arg(&owner_path).arg("--mock-response").arg(&proposal_path).output().unwrap();
+    assert!(!run().status.success());
+    assert!(!run().status.success());
+    let store = SqliteStore::open(&path).unwrap();
+    let checkpoints = store.events("task").unwrap().into_iter().filter(|e| e.contains("thinking")).count();
+    assert_eq!(checkpoints, 1, "rerun consumed an extra step");
+    drop(store);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
 #[test]
 fn stale_revision_cannot_checkpoint_newer_task() {
     let path = std::env::temp_dir().join(format!("jarvis-owner-stale-{}", std::process::id()));
