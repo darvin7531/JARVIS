@@ -67,6 +67,9 @@ fn validate_schema(db: &Connection, version: i64) -> Result<(), StorageError> {
     if version >= 7 {
         expected.execute_batch("ALTER TABLE inference_budget ADD COLUMN pending INTEGER NOT NULL DEFAULT 1 CHECK(pending IN (0, 1));")?;
     }
+    if version >= 8 {
+        expected.execute_batch("CREATE TABLE tool_approvals (id TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL, revision INTEGER NOT NULL, request TEXT NOT NULL, expires INTEGER NOT NULL, consumed INTEGER NOT NULL DEFAULT 0 CHECK(consumed IN (0, 1)));")?;
+    }
     fn definitions(db: &Connection) -> Result<Vec<(String, String)>, StorageError> {
         let mut query = db.prepare(
             "SELECT name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name",
@@ -136,7 +139,7 @@ impl SqliteStore {
         db.execute_batch("PRAGMA foreign_keys = ON;")?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if !(0..=7).contains(&version) {
+        if !(0..=8).contains(&version) {
             return Err(StorageError::UnsupportedSchema);
         }
         if version > 0 {
@@ -183,8 +186,58 @@ impl SqliteStore {
         if version < 7 {
             tx.execute_batch("ALTER TABLE inference_budget ADD COLUMN pending INTEGER NOT NULL DEFAULT 1 CHECK(pending IN (0, 1)); PRAGMA user_version = 7;")?;
         }
+        if version < 8 {
+            tx.execute_batch("CREATE TABLE tool_approvals (id TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL, revision INTEGER NOT NULL, request TEXT NOT NULL, expires INTEGER NOT NULL, consumed INTEGER NOT NULL DEFAULT 0 CHECK(consumed IN (0, 1))); PRAGMA user_version = 8;")?;
+        }
         tx.commit()?;
         Ok(Self { db })
+    }
+
+    // Trusted owner only: untrusted requests must never reach this method.
+    pub fn issue_tool_approval(
+        &mut self,
+        id: &str,
+        task: &str,
+        revision: i64,
+        request: &crate::tool_policy::ToolRequest,
+        expires: std::time::SystemTime,
+    ) -> Result<(), StorageError> {
+        let expires = i64::try_from(
+            expires
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| StorageError::OperationFailed)?
+                .as_secs(),
+        )
+        .map_err(|_| StorageError::OperationFailed)?;
+        if id.is_empty() || task.is_empty() || revision < 0 {
+            return Err(StorageError::OperationFailed);
+        }
+        let request = serde_json::to_string(request).map_err(|_| StorageError::OperationFailed)?;
+        self.db.execute("INSERT INTO tool_approvals (id, task_id, revision, request, expires) VALUES (?1, ?2, ?3, ?4, ?5)", params![id, task, revision, request, expires])?;
+        Ok(())
+    }
+
+    pub(crate) fn consume_tool_approval(
+        &mut self,
+        id: &str,
+        task: &str,
+        revision: i64,
+        request: &crate::tool_policy::ToolRequest,
+    ) -> Result<bool, StorageError> {
+        let request = serde_json::to_string(request).map_err(|_| StorageError::OperationFailed)?;
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let now = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| StorageError::OperationFailed)?
+                .as_secs(),
+        )
+        .map_err(|_| StorageError::OperationFailed)?;
+        let changed = tx.execute("UPDATE tool_approvals SET consumed = 1 WHERE id = ?1 AND task_id = ?2 AND revision = ?3 AND request = ?4 AND expires > ?5 AND consumed = 0", params![id, task, revision, request, now])?;
+        tx.commit()?;
+        Ok(changed == 1)
     }
 
     /// Atomically reserve a conservative token allowance across all processes.
