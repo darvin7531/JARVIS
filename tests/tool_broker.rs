@@ -445,14 +445,31 @@ fn successful_execution_records_a_correlated_outcome_after_intent() {
     let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
     create_task(&mut store);
     store.initialize_tool_budget(2).unwrap();
-    store.issue_tool_approval("one", "task", 1, &request(), SystemTime::now() + Duration::from_secs(60)).unwrap();
+    store
+        .issue_tool_approval(
+            "one",
+            "task",
+            1,
+            &request(),
+            SystemTime::now() + Duration::from_secs(60),
+        )
+        .unwrap();
     let mut broker = Broker::with_approval(contract(), store, "one".into(), "task".into(), 1);
     assert_eq!(broker.call(&request()), Ok("hello".into()));
     drop(broker);
     let store = jarvis::storage::SqliteStore::open(&path).unwrap();
     let events = store.events("task").unwrap();
-    let values: Vec<Value> = events.iter().filter_map(|event| serde_json::from_str(event).ok()).collect();
-    assert_eq!(values, vec![json!({"type":"tool_execution_intent", "approval_id":"one"}), json!({"type":"tool_execution_outcome", "approval_id":"one", "outcome":"succeeded"})]);
+    let values: Vec<Value> = events
+        .iter()
+        .filter_map(|event| serde_json::from_str(event).ok())
+        .collect();
+    assert_eq!(
+        values,
+        vec![
+            json!({"type":"tool_execution_intent", "approval_id":"one"}),
+            json!({"type":"tool_execution_outcome", "approval_id":"one", "outcome":"succeeded"})
+        ]
+    );
 }
 
 #[test]
