@@ -1,5 +1,14 @@
 use std::{fs, process::Command};
 
+fn add_budget(path: &std::path::Path) {
+    let workspace = path.with_extension("workspace");
+    let _ = fs::remove_dir_all(&workspace);
+    drop(jarvis::storage::SqliteStore::create(&workspace).unwrap());
+    let mut config: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    config["budget"] = serde_json::json!({"workspace": workspace, "limit_tokens": 10000, "max_input_tokens": 2048});
+    fs::write(path, config.to_string()).unwrap();
+}
+
 #[test]
 fn configured_chat_rejects_vision_for_text_only_transport() {
     let path = std::env::temp_dir().join(format!("jarvis-vision-{}.json", std::process::id()));
@@ -74,6 +83,7 @@ fn configured_cli_streams_and_forwards_limits() {
     });
     let path = std::env::temp_dir().join(format!("jarvis-stream-{}.json", std::process::id()));
     fs::write(&path, format!(r#"{{"limits":{{"max_tokens":7,"timeout_seconds":5,"max_output_bytes":100}},"models":[{{"name":"coder","tier":"t2","capabilities":["text"],"allowed_data":["public"],"port":{port}}}]}}"#)).unwrap();
+    add_budget(&path);
     let mut child = Command::new(env!("CARGO_BIN_EXE_jarvis"))
         .args(["chat", "--config", path.to_str().unwrap(), "code: hi"])
         .stdout(Stdio::piped())
@@ -119,6 +129,7 @@ fn timeout_reports_missing_usage() {
     });
     let path = std::env::temp_dir().join(format!("jarvis-timeout-{}.json", std::process::id()));
     fs::write(&path, format!(r#"{{"limits":{{"timeout_seconds":1}},"models":[{{"name":"test","tier":"t1","capabilities":["text"],"allowed_data":["public"],"port":{port}}}]}}"#)).unwrap();
+    add_budget(&path);
     let output = Command::new(env!("CARGO_BIN_EXE_jarvis"))
         .args(["chat", "--config", path.to_str().unwrap(), "hi"])
         .output()
@@ -152,6 +163,7 @@ fn signal_cancels_cli_and_reports_missing_usage() {
     });
     let path = std::env::temp_dir().join(format!("jarvis-cancel-{}.json", std::process::id()));
     fs::write(&path, format!(r#"{{"models":[{{"name":"test","tier":"t1","capabilities":["text"],"allowed_data":["public"],"port":{port}}}]}}"#)).unwrap();
+    add_budget(&path);
     let mut child = Command::new(env!("CARGO_BIN_EXE_jarvis"))
         .args(["chat", "--config", path.to_str().unwrap(), "hi"])
         .stdout(Stdio::piped())

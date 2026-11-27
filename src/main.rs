@@ -1,4 +1,6 @@
 mod chat;
+#[allow(dead_code)]
+mod provider;
 
 use jarvis::{Event, Lifecycle};
 use serde::Deserialize;

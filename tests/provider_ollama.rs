@@ -1,4 +1,8 @@
-use jarvis::provider::{Error, Ollama, Provider, Request};
+#[allow(dead_code)]
+#[path = "../src/provider.rs"]
+mod provider;
+
+use crate::provider::{Error, Ollama, Provider, Request};
 use std::{
     io::{Read, Write},
     net::TcpListener,

@@ -20,7 +20,9 @@ jobs:
       - name: Run real inference through CLI
         run: |
           cargo build --locked
-          printf '%s\n' '{"models":[{"name":"smollm2:135m-instruct-q4_0","tier":"t1","capabilities":["text"],"allowed_data":["public"],"port":11434}]}' > "$RUNNER_TEMP/chat.json"
+          export JARVIS_SMOKE_WORKSPACE="$RUNNER_TEMP/jarvis-workspace"
+          cargo test --locked --test budget_safety create_smoke_workspace -- --ignored
+          printf '%s\n' "{\"models\":[{\"name\":\"smollm2:135m-instruct-q4_0\",\"tier\":\"t1\",\"capabilities\":[\"text\"],\"allowed_data\":[\"public\"],\"port\":11434}],\"budget\":{\"workspace\":\"$JARVIS_SMOKE_WORKSPACE\",\"limit_tokens\":2176,\"max_input_tokens\":2048}}" > "$RUNNER_TEMP/chat.json"
           timeout 150s python3 -c '
           import subprocess, sys
           p = subprocess.Popen(["target/debug/jarvis", "chat", "--config", sys.argv[1], "Say hello in one word."], stdout=subprocess.PIPE, stderr=subprocess.PIPE)

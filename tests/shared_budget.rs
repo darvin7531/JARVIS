@@ -1,4 +1,29 @@
+#[allow(dead_code)]
+#[path = "../src/provider.rs"]
+mod provider;
+
 use std::{fs, process::Command};
+
+#[test]
+fn missing_budget_rejects_before_connecting() {
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let path = std::env::temp_dir().join(format!("jarvis-no-budget-{}.json", std::process::id()));
+    fs::write(&path, serde_json::json!({
+        "models": [{"name":"model","tier":"t1","capabilities":["text"],"allowed_data":["public"],"port":listener.local_addr().unwrap().port()}],
+        "limits": {"timeout_seconds":1}
+    }).to_string()).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_jarvis"))
+        .args(["chat", "--config"])
+        .arg(&path)
+        .arg("hello")
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+    assert_eq!(output.stderr, b"{\"error\":\"invalid_config\"}\n");
+    assert!(listener.accept().is_err(), "connected without a budget");
+}
 
 #[test]
 fn exhausted_shared_budget_rejects_before_connecting() {
@@ -113,7 +138,7 @@ fn budget_limit_is_persistent_and_cannot_be_raised_by_another_caller() {
 
 #[test]
 fn terminal_overusage_is_retained_for_settlement() {
-    use jarvis::provider::{Error, Ollama, Request};
+    use crate::provider::{Error, Ollama, Request};
     use std::{
         io::{Read, Write},
         net::TcpListener,

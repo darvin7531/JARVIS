@@ -20,7 +20,14 @@ fn config(port: u16, timeout: u64, name: &str) -> std::path::PathBuf {
         "jarvis-security-{name}-{}.json",
         std::process::id()
     ));
-    fs::write(&path, format!(r#"{{"limits":{{"timeout_seconds":{timeout},"max_output_bytes":524288}},"models":[{{"name":"test","tier":"t1","capabilities":["text"],"allowed_data":["sensitive","public"],"trusted_local":true,"port":{port}}}]}}"#)).unwrap();
+    let workspace = path.with_extension("workspace");
+    let _ = fs::remove_dir_all(&workspace);
+    drop(jarvis::storage::SqliteStore::create(&workspace).unwrap());
+    fs::write(&path, serde_json::json!({
+        "limits": {"timeout_seconds":timeout,"max_output_bytes":524288},
+        "models": [{"name":"test","tier":"t1","capabilities":["text"],"allowed_data":["sensitive","public"],"trusted_local":true,"port":port}],
+        "budget": {"workspace":workspace,"limit_tokens":10000,"max_input_tokens":2048}
+    }).to_string()).unwrap();
     path
 }
 
