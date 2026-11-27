@@ -85,6 +85,11 @@ fn validate_schema(db: &Connection, version: i64) -> Result<(), StorageError> {
     if version >= 10 {
         expected.execute_batch("CREATE TABLE tool_executions (approval_id TEXT PRIMARY KEY NOT NULL REFERENCES tool_approvals(id), pending INTEGER NOT NULL CHECK(pending IN (0, 1))); ")?;
     }
+    if version >= 11 {
+        expected.execute_batch(
+            "CREATE TABLE mock_state (resource TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);",
+        )?;
+    }
     fn definitions(db: &Connection) -> Result<Vec<(String, String)>, StorageError> {
         let mut query = db.prepare(
             "SELECT name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name",
@@ -154,7 +159,7 @@ impl SqliteStore {
         db.execute_batch("PRAGMA foreign_keys = ON;")?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if !(0..=10).contains(&version) {
+        if !(0..=11).contains(&version) {
             return Err(StorageError::UnsupportedSchema);
         }
         if version > 0 {
@@ -210,6 +215,9 @@ impl SqliteStore {
         if version < 10 {
             tx.execute_batch("CREATE TABLE tool_executions (approval_id TEXT PRIMARY KEY NOT NULL REFERENCES tool_approvals(id), pending INTEGER NOT NULL CHECK(pending IN (0, 1))); INSERT INTO tool_executions SELECT id, 1 FROM tool_approvals WHERE consumed = 1; PRAGMA user_version = 10;")?;
         }
+        if version < 11 {
+            tx.execute_batch("CREATE TABLE mock_state (resource TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL); PRAGMA user_version = 11;")?;
+        }
         tx.commit()?;
         Ok(Self { db })
     }
@@ -233,8 +241,7 @@ impl SqliteStore {
         if id.is_empty()
             || task.is_empty()
             || revision < 0
-            || request.tool != "inert"
-            || request.action != "echo"
+            || !crate::tool_policy::valid_action(&request.tool, &request.action)
             || request.resource.is_empty()
             || request.resource.len() > 128
             || crate::tool_policy::validate_tool(&request.tool, &request.arguments).is_err()
@@ -323,6 +330,23 @@ impl SqliteStore {
         )
         .map_err(|_| StorageError::OperationFailed)?;
         Ok(expires > now)
+    }
+
+    pub(crate) fn mock_write(&self, resource: &str, value: &str) -> Result<(), StorageError> {
+        self.db.execute("INSERT INTO mock_state (resource, value) VALUES (?1, ?2) ON CONFLICT(resource) DO UPDATE SET value = excluded.value", params![resource, value])?;
+        Ok(())
+    }
+
+    pub(crate) fn mock_read(&self, resource: &str) -> Result<String, StorageError> {
+        Ok(self
+            .db
+            .query_row(
+                "SELECT value FROM mock_state WHERE resource = ?1",
+                [resource],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or_default())
     }
 
     pub(crate) fn record_tool_outcome(

@@ -61,11 +61,11 @@ const INERT_TEXT_MAX_BYTES: usize = 1024;
 /// Argument schema; maxUtf8Bytes counts UTF-8 bytes, not Unicode characters.
 pub fn tool_schema(name: &str) -> Option<Value> {
     match name {
-        "inert" => Some(serde_json::json!({
+        "inert" | "read" | "write" => Some(serde_json::json!({
             "type": "object",
             "required": ["text"],
             "additionalProperties": false,
-            "properties": {"text": {"type": "string", "maxUtf8Bytes": INERT_TEXT_MAX_BYTES}}
+            "properties": {"text": {"type": "string", "maxUtf8Bytes": if name == "read" { 0 } else { INERT_TEXT_MAX_BYTES }}}
         })),
         _ => None,
     }
@@ -83,6 +83,8 @@ fn inert_text(arguments: &Value) -> Option<&str> {
 #[derive(Debug, PartialEq, Eq)]
 pub enum RegisteredTool {
     Inert { text: String },
+    Read { text: String },
+    Write { text: String },
 }
 
 pub fn validate_tool(name: &str, arguments: &Value) -> Result<RegisteredTool, BrokerError> {
@@ -92,16 +94,26 @@ pub fn validate_tool(name: &str, arguments: &Value) -> Result<RegisteredTool, Br
                 .ok_or(BrokerError::InvalidArguments)?
                 .to_owned(),
         }),
+        "read" => match inert_text(arguments) {
+            Some("") => Ok(RegisteredTool::Read {
+                text: String::new(),
+            }),
+            _ => Err(BrokerError::InvalidArguments),
+        },
+        "write" => Ok(RegisteredTool::Write {
+            text: inert_text(arguments)
+                .ok_or(BrokerError::InvalidArguments)?
+                .to_owned(),
+        }),
         _ => Err(BrokerError::UnknownTool),
     }
 }
 
-impl RegisteredTool {
-    fn execute(self) -> String {
-        match self {
-            Self::Inert { text } => text,
-        }
-    }
+pub(crate) fn valid_action(tool: &str, action: &str) -> bool {
+    matches!(
+        (tool, action),
+        ("inert", "echo") | ("read", "read") | ("write", "write")
+    )
 }
 
 // The owner must keep broker construction outside the untrusted request path.
@@ -147,9 +159,13 @@ impl Broker {
         }
         let contract = &self.contract;
         if SystemTime::now() >= contract.expires_at
-            || !contract.scopes.contains(&Scope::Read)
+            || !contract.scopes.contains(&if request.tool == "write" {
+                Scope::Write
+            } else {
+                Scope::Read
+            })
             || request.tool != contract.tool
-            || request.action != "echo"
+            || !valid_action(&request.tool, &request.action)
             || request.action != contract.action
             || request.resource != contract.resource
             || contract.denied_resources.contains(&request.resource)
@@ -157,7 +173,11 @@ impl Broker {
         {
             return Err(BrokerError::Denied);
         }
-        let RegisteredTool::Inert { text } = &tool;
+        let text = match &tool {
+            RegisteredTool::Inert { text }
+            | RegisteredTool::Read { text }
+            | RegisteredTool::Write { text } => text,
+        };
         if text != &contract.permitted_text {
             return Err(BrokerError::Denied);
         }
@@ -176,7 +196,18 @@ impl Broker {
             return Err(BrokerError::Denied);
         }
         self.executions += 1;
-        let result = tool.execute();
+        let result = match tool {
+            RegisteredTool::Inert { text } => text,
+            RegisteredTool::Read { .. } => store
+                .mock_read(&request.resource)
+                .map_err(|_| BrokerError::OutcomeUncertain)?,
+            RegisteredTool::Write { text } => {
+                store
+                    .mock_write(&request.resource, &text)
+                    .map_err(|_| BrokerError::OutcomeUncertain)?;
+                text
+            }
+        };
         store
             .record_tool_outcome(id, task, *revision)
             .map_err(|_| BrokerError::OutcomeUncertain)?;
