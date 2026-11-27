@@ -14,3 +14,5 @@ pub struct Event {
 
 pub mod inference;
 pub mod storage;
+
+pub mod provider;

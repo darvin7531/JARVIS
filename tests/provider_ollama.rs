@@ -1,0 +1,97 @@
+use jarvis::provider::{Error, Ollama, Provider, Request};
+use std::{
+    io::{Read, Write},
+    net::TcpListener,
+    sync::atomic::AtomicBool,
+    thread,
+    time::Duration,
+};
+
+fn request() -> Request<'static> {
+    Request {
+        model: "test",
+        prompt: "private prompt",
+        max_tokens: 8,
+        max_output_bytes: 64,
+        timeout: Duration::from_secs(2),
+    }
+}
+fn serve(body: &'static str, delay: Duration) -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = [0; 4096];
+        let _ = stream.read(&mut buf);
+        thread::sleep(delay);
+        let _ = write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+    });
+    port
+}
+#[test]
+fn fragmented_ndjson_and_usage() {
+    let port = serve("{\"response\":\"Hi\",\"done\":false}\n{\"response\":\"!\",\"done\":true,\"prompt_eval_count\":2,\"eval_count\":3}\n", Duration::ZERO);
+    let mut text = String::new();
+    let usage = Ollama { port }
+        .generate(&request(), &AtomicBool::new(false), &mut |s| {
+            text.push_str(s)
+        })
+        .unwrap();
+    assert_eq!(text, "Hi!");
+    assert_eq!((usage.input_tokens, usage.output_tokens), (2, 3));
+}
+#[test]
+fn truncated_budget_timeout_cancel_and_redacted_errors() {
+    let mut emit = |_: &str| {};
+    let port = serve(
+        "{\"response\":\"private prompt\",\"done\":false}\n",
+        Duration::ZERO,
+    );
+    let err = Ollama { port }
+        .generate(&request(), &AtomicBool::new(false), &mut emit)
+        .unwrap_err();
+    assert_eq!(err, Error::Truncated);
+    assert!(!format!("{err:?}").contains("private prompt"));
+    let port = serve("{\"response\":\"long\",\"done\":false}\n", Duration::ZERO);
+    let mut r = request();
+    r.max_output_bytes = 2;
+    assert_eq!(
+        Ollama { port }.generate(&r, &AtomicBool::new(false), &mut emit),
+        Err(Error::Budget)
+    );
+    let port = serve("", Duration::from_secs(1));
+    let mut r = request();
+    r.timeout = Duration::from_millis(80);
+    assert_eq!(
+        Ollama { port }.generate(&r, &AtomicBool::new(false), &mut emit),
+        Err(Error::Timeout)
+    );
+    assert_eq!(
+        Ollama { port }.generate(&r, &AtomicBool::new(true), &mut emit),
+        Err(Error::Cancelled)
+    );
+}
+#[test]
+fn actual_ollama_smoke_when_enabled() {
+    if std::env::var_os("JARVIS_OLLAMA_SMOKE").is_none() {
+        return;
+    }
+    let r = Request {
+        model: "smollm2:135m-instruct-q4_0",
+        prompt: "Say hello in one word.",
+        max_tokens: 16,
+        max_output_bytes: 4096,
+        timeout: Duration::from_secs(120),
+    };
+    let mut text = String::new();
+    let usage = Ollama { port: 11434 }
+        .generate(&r, &AtomicBool::new(false), &mut |s| text.push_str(s))
+        .unwrap();
+    assert!(!text.trim().is_empty());
+    assert!(usage.input_tokens > 0 && usage.output_tokens > 0 && usage.output_tokens <= 16);
+}
