@@ -159,11 +159,13 @@ impl Ollama {
                         }
                         thread::sleep(Duration::from_millis(5));
                     };
-                    let value: serde_json::Value =
+                    #[derive(serde::Deserialize)]
+                    struct Version {
+                        version: String,
+                    }
+                    let value: Version =
                         serde_json::from_slice(&bytes).map_err(|_| Error::Transport)?;
-                    if status.success()
-                        && value.get("version").and_then(|v| v.as_str()) == Some("0.13.5")
-                    {
+                    if status.success() && value.version == "0.13.5" {
                         return Ok(());
                     }
                     return Err(Error::Transport);

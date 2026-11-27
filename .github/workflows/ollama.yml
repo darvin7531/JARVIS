@@ -51,6 +51,15 @@ jobs:
           '
       - name: Reject oversized prompt through budgeted CLI
         run: cargo test --locked --test budget_safety real_ollama_rejects_oversized_prompt -- --ignored
+      - name: Reject real unsupported Ollama before inference
+        run: |
+          docker run -d --name ollama-old -e OLLAMA_NO_CLOUD=1 -p 127.0.0.1:11435:11434 ollama/ollama:0.6.8
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:11435/api/version > "$RUNNER_TEMP/version.json" && break; sleep 1; done
+          python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["version"] == "0.6.8"' "$RUNNER_TEMP/version.json"
+          printf '%s\n' '{"models":[{"name":"unavailable","tier":"t1","capabilities":["text"],"allowed_data":["public"],"port":11435}]}' > "$RUNNER_TEMP/old.json"
+          if target/debug/jarvis chat --config "$RUNNER_TEMP/old.json" hello > "$RUNNER_TEMP/old.out" 2> "$RUNNER_TEMP/old.err"; then exit 1; fi
+          test ! -s "$RUNNER_TEMP/old.out"
+          grep -Fx '{"error":"inference_failed"}' "$RUNNER_TEMP/old.err"
       - name: Stop runner
         if: always()
-        run: docker rm -f ollama || true
+        run: docker rm -f ollama ollama-old || true

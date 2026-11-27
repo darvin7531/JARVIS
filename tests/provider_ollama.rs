@@ -324,3 +324,36 @@ fn unsupported_ollama_is_rejected_before_prompt_is_sent() {
         "must check version before sending prompt"
     );
 }
+
+#[test]
+fn malformed_and_unverified_versions_fail_closed() {
+    for body in [
+        "{}",
+        r#"{"version":"0.13.6"}"#,
+        r#"{"version":"0.13.5-rc1"}"#,
+        r#"{"version":13}"#,
+        r#"{"version":"0.13.5","version":"0.13.5"}"#,
+        "not json",
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0; 4096];
+            let n = stream.read(&mut buf).unwrap();
+            assert!(buf[..n].starts_with(b"GET /api/version "));
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        });
+        assert_eq!(
+            Ollama { port }.generate(&request(), &AtomicBool::new(false), &mut |_| {}),
+            Err(Error::Transport)
+        );
+        server.join().unwrap();
+    }
+}
