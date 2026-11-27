@@ -211,6 +211,7 @@ fn configured_rejection_finishes_only_proven_pre_dispatch_steps() {
         let output = run();
         if let Some(server) = server {
             server.join().unwrap();
+            listener.set_nonblocking(true).unwrap();
         }
         assert!(!output.status.success());
         if case != "unknown" {
