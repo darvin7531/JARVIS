@@ -1,3 +1,7 @@
+mod chat;
+#[allow(dead_code)]
+mod provider;
+
 use jarvis::{Event, Lifecycle};
 use serde::Deserialize;
 use signal_hook::{
@@ -22,7 +26,11 @@ struct Config {}
 enum Error {
     InvalidArguments,
     InvalidConfig,
+    MissingApiKey,
+    CapabilityUnavailable,
+    DataNotAllowed,
     SignalSetupFailed,
+    Chat(&'static str),
 }
 
 impl Error {
@@ -30,13 +38,89 @@ impl Error {
         match self {
             Self::InvalidArguments => "invalid_arguments",
             Self::InvalidConfig => "invalid_config",
+            Self::MissingApiKey => "missing_api_key",
+            Self::CapabilityUnavailable => "capability_unavailable",
+            Self::DataNotAllowed => "data_not_allowed",
             Self::SignalSetupFailed => "signal_setup_failed",
+            Self::Chat(code) => code,
         }
     }
 }
 
 fn run() -> Result<(), Error> {
-    let mut args = env::args_os().skip(1);
+    let mut args = env::args_os().skip(1).peekable();
+    if args.peek().is_some_and(|arg| arg == "chat") {
+        args.next();
+        let backend = args.next().ok_or(Error::InvalidArguments)?;
+        if backend == "--config" {
+            return chat::run(args).map_err(Error::Chat);
+        }
+        if backend == "--openai" {
+            if args.next().is_none_or(|arg| arg != "--model")
+                || args.next().is_none()
+                || args.next().is_none()
+                || args.next().is_some()
+            {
+                return Err(Error::InvalidArguments);
+            }
+            if !env::var("OPENAI_API_KEY").is_ok_and(|key| !key.trim().is_empty()) {
+                return Err(Error::MissingApiKey);
+            }
+            return Err(Error::InvalidArguments);
+        }
+        if backend != "--mock" {
+            return Err(Error::InvalidArguments);
+        }
+        use jarvis::inference::{route, Capability, DataClass, ModelProfile, RouteError, Tier};
+        let mut capability = Capability::Text;
+        let mut data = DataClass::Public;
+        let mut seen_capability = false;
+        let mut seen_data = false;
+        let mut prompt = args.next().ok_or(Error::InvalidArguments)?;
+        while prompt == "--require" || prompt == "--data" {
+            let value = args.next().ok_or(Error::InvalidArguments)?;
+            if prompt == "--require" {
+                if seen_capability {
+                    return Err(Error::InvalidArguments);
+                }
+                seen_capability = true;
+                capability = match value.to_str() {
+                    Some("text") => Capability::Text,
+                    Some("vision") => Capability::Vision,
+                    Some("tools") => Capability::Tools,
+                    _ => return Err(Error::InvalidArguments),
+                };
+            } else {
+                if seen_data {
+                    return Err(Error::InvalidArguments);
+                }
+                seen_data = true;
+                data = match value.to_str() {
+                    Some("public") => DataClass::Public,
+                    Some("internal") => DataClass::Internal,
+                    Some("sensitive") => DataClass::Sensitive,
+                    _ => return Err(Error::InvalidArguments),
+                };
+            }
+            prompt = args.next().ok_or(Error::InvalidArguments)?;
+        }
+        let models = [ModelProfile {
+            name: "mock",
+            tier: Tier::T1,
+            capabilities: &[Capability::Text],
+            allowed_data: &[DataClass::Public],
+        }];
+        route(&models, Tier::T1, None, capability, data).map_err(|err| match err {
+            RouteError::CapabilityUnavailable => Error::CapabilityUnavailable,
+            RouteError::DataNotAllowed => Error::DataNotAllowed,
+            RouteError::ModelUnavailable => Error::InvalidArguments,
+        })?;
+        if args.next().is_some() {
+            return Err(Error::InvalidArguments);
+        }
+        println!("{}", prompt.to_string_lossy());
+        return Ok(());
+    }
     let _config: Config = match args.next() {
         None => Config::default(),
         Some(flag) if flag == "--config" => {

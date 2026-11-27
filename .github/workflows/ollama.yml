@@ -1,0 +1,58 @@
+name: Ollama smoke
+on: [push, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  real-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc
+        with:
+          toolchain: 1.89.0
+      - name: Start pinned Ollama and pull small model
+        run: |
+          docker run -d --name ollama -e OLLAMA_NO_CLOUD=1 -p 127.0.0.1:11434:11434 ollama/ollama@sha256:2c9595c555fd70a28363489ac03bd5bf9e7c5bdf2890373c3a830ffd7252ce6d
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:11434/ && break; sleep 1; done
+          docker exec ollama ollama pull smollm2:135m-instruct-q4_0
+          curl -fsS http://127.0.0.1:11434/api/tags | python3 -c 'import json,sys; models=json.load(sys.stdin)["models"]; assert any(m["name"] == "smollm2:135m-instruct-q4_0" and m["digest"] == "dbc9f6c89cb0673427e7215f12b0e71f1bcc716b780ec71da36c8dc6d28ab591" for m in models), "unexpected model digest"'
+      - name: Run real inference through CLI
+        run: |
+          cargo build --locked
+          export JARVIS_SMOKE_WORKSPACE="$RUNNER_TEMP/jarvis-workspace"
+          cargo test --locked --test budget_safety create_smoke_workspace -- --ignored
+          printf '%s\n' "{\"models\":[{\"name\":\"smollm2:135m-instruct-q4_0\",\"tier\":\"t1\",\"capabilities\":[\"text\"],\"allowed_data\":[\"public\"],\"trusted_no_truncation\":true,\"port\":11434}],\"budget\":{\"workspace\":\"$JARVIS_SMOKE_WORKSPACE\",\"limit_tokens\":2176,\"max_input_tokens\":2048}}" > "$RUNNER_TEMP/chat.json"
+          timeout 150s python3 -c '
+          import subprocess, sys
+          p = subprocess.Popen(["target/debug/jarvis", "chat", "--config", sys.argv[1], "Say hello in one word."], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+          count = 0
+          while b := p.stdout.read(1):
+              sys.stdout.buffer.write(b)
+              sys.stdout.buffer.flush()
+              count += len(b)
+          err = p.stderr.read().decode()
+          assert p.wait() == 0, err
+          assert count > 0, "empty model response"
+          import json
+          usage = json.loads(err)
+          assert usage["input_tokens"] > 0 and 0 < usage["output_tokens"] <= 128, usage
+          print("\nCLI usage:", usage)
+          ' "$RUNNER_TEMP/chat.json"
+      - name: Run budgeted real-model CLI
+        run: cargo test --locked --test budget_safety real_ollama_budgeted_cli -- --ignored
+      - name: Confirm oversized prompt is accepted when truncation is enabled
+        run: |
+          python3 -c '
+          import json, urllib.request
+          data = json.dumps({"model":"smollm2:135m-instruct-q4_0", "prompt":"hello " * 12000, "stream":False, "truncate":True, "options":{"num_ctx":2048,"num_predict":1}}).encode()
+          req = urllib.request.Request("http://127.0.0.1:11434/api/generate", data=data, headers={"Content-Type":"application/json"})
+          with urllib.request.urlopen(req, timeout=150) as response:
+              result = json.load(response)
+          assert result["done"] and 0 < result["prompt_eval_count"] <= 2048, result
+          '
+      - name: Reject oversized prompt through budgeted CLI
+        run: cargo test --locked --test budget_safety real_ollama_rejects_oversized_prompt -- --ignored
+      - name: Stop runner
+        if: always()
+        run: docker rm -f ollama || true

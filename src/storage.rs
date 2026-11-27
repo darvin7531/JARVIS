@@ -58,6 +58,15 @@ fn validate_schema(db: &Connection, version: i64) -> Result<(), StorageError> {
     if version >= 4 {
         expected.execute_batch("ALTER TABLE evidence ADD COLUMN provenance TEXT; ALTER TABLE evidence ADD COLUMN observed_at TEXT; ALTER TABLE evidence ADD COLUMN classification TEXT;")?;
     }
+    if version >= 5 {
+        expected.execute_batch("CREATE TABLE inference_budget (id INTEGER PRIMARY KEY, tokens INTEGER NOT NULL CHECK(tokens >= 0));")?;
+    }
+    if version >= 6 {
+        expected.execute_batch("CREATE TABLE inference_budget_limit (id INTEGER PRIMARY KEY CHECK(id = 1), tokens INTEGER CHECK(tokens >= 0));")?;
+    }
+    if version >= 7 {
+        expected.execute_batch("ALTER TABLE inference_budget ADD COLUMN pending INTEGER NOT NULL DEFAULT 1 CHECK(pending IN (0, 1));")?;
+    }
     fn definitions(db: &Connection) -> Result<Vec<(String, String)>, StorageError> {
         let mut query = db.prepare(
             "SELECT name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name",
@@ -127,7 +136,7 @@ impl SqliteStore {
         db.execute_batch("PRAGMA foreign_keys = ON;")?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if !(0..=4).contains(&version) {
+        if !(0..=7).contains(&version) {
             return Err(StorageError::UnsupportedSchema);
         }
         if version > 0 {
@@ -165,8 +174,78 @@ impl SqliteStore {
         if version < 4 {
             tx.execute_batch("ALTER TABLE evidence ADD COLUMN provenance TEXT; ALTER TABLE evidence ADD COLUMN observed_at TEXT; ALTER TABLE evidence ADD COLUMN classification TEXT; PRAGMA user_version = 4;")?;
         }
+        if version < 5 {
+            tx.execute_batch("CREATE TABLE inference_budget (id INTEGER PRIMARY KEY, tokens INTEGER NOT NULL CHECK(tokens >= 0)); PRAGMA user_version = 5;")?;
+        }
+        if version < 6 {
+            tx.execute_batch("CREATE TABLE inference_budget_limit (id INTEGER PRIMARY KEY CHECK(id = 1), tokens INTEGER CHECK(tokens >= 0)); INSERT INTO inference_budget_limit SELECT 1, NULL WHERE EXISTS (SELECT 1 FROM inference_budget); PRAGMA user_version = 6;")?;
+        }
+        if version < 7 {
+            tx.execute_batch("ALTER TABLE inference_budget ADD COLUMN pending INTEGER NOT NULL DEFAULT 1 CHECK(pending IN (0, 1)); PRAGMA user_version = 7;")?;
+        }
         tx.commit()?;
         Ok(Self { db })
+    }
+
+    /// Atomically reserve a conservative token allowance across all processes.
+    pub fn reserve_tokens(&mut self, limit: u64, amount: u64) -> Result<Option<i64>, StorageError> {
+        let limit = i64::try_from(limit).map_err(|_| StorageError::OperationFailed)?;
+        let amount = i64::try_from(amount).map_err(|_| StorageError::OperationFailed)?;
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO inference_budget_limit (id, tokens) VALUES (1, ?1)",
+            [limit],
+        )?;
+        let matches: bool = tx.query_row(
+            "SELECT coalesce(tokens = ?1, 0) FROM inference_budget_limit WHERE id = 1",
+            [limit],
+            |r| r.get(0),
+        )?;
+        if !matches {
+            return Err(StorageError::OperationFailed);
+        }
+        // ponytail: one unresolved request per workspace; add a durable per-request
+        // accounting protocol before allowing concurrent provider calls.
+        let pending: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM inference_budget WHERE pending = 1)",
+            [],
+            |r| r.get(0),
+        )?;
+        if pending {
+            tx.commit()?;
+            return Ok(None);
+        }
+        let used: i64 = tx.query_row(
+            "SELECT coalesce(sum(tokens), 0) FROM inference_budget",
+            [],
+            |r| r.get(0),
+        )?;
+        if amount > limit || used > limit - amount {
+            tx.commit()?;
+            return Ok(None);
+        }
+        tx.execute(
+            "INSERT INTO inference_budget (tokens) VALUES (?1)",
+            [amount],
+        )?;
+        let id = tx.last_insert_rowid();
+        tx.commit()?;
+        Ok(Some(id))
+    }
+
+    /// Replace a reservation only after terminal usage has been validated.
+    pub fn settle_tokens(&mut self, id: i64, tokens: u64) -> Result<(), StorageError> {
+        let tokens = i64::try_from(tokens).map_err(|_| StorageError::OperationFailed)?;
+        if self.db.execute(
+            "UPDATE inference_budget SET tokens = ?1, pending = 0 WHERE id = ?2 AND pending = 1",
+            params![tokens, id],
+        )? != 1
+        {
+            return Err(StorageError::OperationFailed);
+        }
+        Ok(())
     }
 
     pub fn create_task(
