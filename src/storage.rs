@@ -640,6 +640,36 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Trusted owner only: stop all clients and obtain exclusive maintenance access.
+    pub fn reconcile_agent_runtime(
+        &mut self,
+        task: &str,
+        revision: i64,
+        outcome: ReconciliationOutcome,
+        evidence: &str,
+    ) -> Result<(), StorageError> {
+        if evidence.trim().is_empty() || evidence.len() > 1024 {
+            return Err(StorageError::OperationFailed);
+        }
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let changed = tx.execute(
+            "UPDATE agent_runtime SET closed = 1 WHERE task_id = ?1 AND revision = ?2 AND closed = 0 AND EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND version = ?2) AND NOT EXISTS (SELECT 1 FROM tool_executions e JOIN tool_approvals a ON a.id = e.approval_id WHERE a.task_id = ?1 AND e.pending = 1)",
+            params![task, revision],
+        )?;
+        if changed != 1 {
+            return Err(StorageError::OperationFailed);
+        }
+        let event = serde_json::json!({"type": "agent_runtime_reconciliation", "outcome": outcome, "evidence": evidence}).to_string();
+        tx.execute(
+            "INSERT INTO events (task_id, event, revision, occurred_at) VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            params![task, event, revision],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     // Reserve before inference; a crash leaves pending set and cannot replay work.
     pub fn agent_step(
         &mut self,
@@ -667,7 +697,7 @@ impl SqliteStore {
         failed: bool,
         terminal: bool,
     ) -> Result<(), StorageError> {
-        let changed = self.db.execute("UPDATE agent_runtime SET failures = failures + ?3, pending = 0, terminal = ?4 WHERE task_id = ?1 AND revision = ?2 AND pending = 1 AND terminal = 0 AND EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND version = ?2)", params![task, revision, failed as i64, terminal as i64])?;
+        let changed = self.db.execute("UPDATE agent_runtime SET failures = failures + ?3, pending = 0, terminal = ?4 WHERE task_id = ?1 AND revision = ?2 AND pending = 1 AND terminal = 0 AND closed = 0 AND EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND version = ?2)", params![task, revision, failed as i64, terminal as i64])?;
         if changed != 1 {
             return Err(StorageError::OperationFailed);
         }

@@ -1,28 +1,4 @@
-use jarvis::storage::{ReconciliationOutcome, SqliteStore, StorageError, Task};
-
-// Red-phase fallback: the inherent owner API supersedes this once implemented.
-#[allow(dead_code)]
-trait MissingReconciliation {
-    fn reconcile_agent_runtime(
-        &mut self,
-        task: &str,
-        revision: i64,
-        outcome: ReconciliationOutcome,
-        evidence: &str,
-    ) -> Result<(), StorageError>;
-}
-
-impl MissingReconciliation for SqliteStore {
-    fn reconcile_agent_runtime(
-        &mut self,
-        _task: &str,
-        _revision: i64,
-        _outcome: ReconciliationOutcome,
-        _evidence: &str,
-    ) -> Result<(), StorageError> {
-        Err(StorageError::OperationFailed)
-    }
-}
+use jarvis::storage::{ReconciliationOutcome, SqliteStore, Task};
 
 #[test]
 fn owner_closes_interrupted_runtime_without_losing_history() {
