@@ -95,3 +95,42 @@ fn concurrent_processes_settle_and_retain_unknown_usage() {
     drop(db);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn budget_limit_is_persistent_and_cannot_be_raised_by_another_caller() {
+    use jarvis::storage::SqliteStore;
+    let root = std::env::temp_dir().join(format!("jarvis-limit-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let mut store = SqliteStore::create(&root).unwrap();
+    assert!(store.reserve_tokens(100, 90).unwrap().is_some());
+    drop(store);
+    let mut store = SqliteStore::open(&root).unwrap();
+    assert!(store.reserve_tokens(1000, 20).is_err());
+    assert!(store.reserve_tokens(100, 20).unwrap().is_none());
+    drop(store);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn terminal_overusage_is_retained_for_settlement() {
+    use jarvis::provider::{Error, Ollama, Request};
+    use std::{io::{Read, Write}, net::TcpListener, sync::atomic::AtomicBool, time::Duration};
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = [0; 4096];
+        stream.read(&mut buf).unwrap();
+        let body = "{\"response\":\"unsafe\",\"done\":true,\"done_reason\":\"stop\",\"prompt_eval_count\":11,\"eval_count\":9}\n";
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+    });
+    let req = Request { model: "test", prompt: "x", max_tokens: 8, max_output_bytes: 64, timeout: Duration::from_secs(5) };
+    let mut text = String::new();
+    let result = Ollama { port }.generate_bounded(&req, &AtomicBool::new(false), &mut |s| text.push_str(s), Some(10));
+    server.join().unwrap();
+    match result {
+        Err(Error::Incomplete(usage)) => assert_eq!((usage.input_tokens, usage.output_tokens), (11, 9)),
+        other => panic!("expected usage with rejection, got {other:?}"),
+    }
+    assert!(text.is_empty());
+}
