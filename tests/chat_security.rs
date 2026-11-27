@@ -153,13 +153,11 @@ fn full_stdout_pipe_respects_sigint_and_timeout() {
         rx.recv_timeout(Duration::from_secs(4)).unwrap();
         thread::sleep(Duration::from_millis(300));
         if signal {
-            assert!(
-                Command::new("kill")
-                    .args(["-INT", &child.0.id().to_string()])
-                    .status()
-                    .unwrap()
-                    .success()
-            );
+            assert!(Command::new("kill")
+                .args(["-INT", &child.0.id().to_string()])
+                .status()
+                .unwrap()
+                .success());
         }
         let deadline = Instant::now() + Duration::from_secs(3);
         while child.0.try_wait().unwrap().is_none() {
