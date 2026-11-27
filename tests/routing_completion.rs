@@ -132,3 +132,50 @@ fn timeout_reports_missing_usage() {
     server.join().unwrap();
     fs::remove_file(path).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn signal_cancels_cli_and_reports_missing_usage() {
+    use std::{
+        io::{BufRead, BufReader, Write},
+        net::TcpListener,
+        process::Stdio,
+        thread,
+        time::{Duration, Instant},
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nConnection: close\r\n\r\n{\"response\":\"partial\\n\",\"done\":false}\n").unwrap();
+        thread::sleep(Duration::from_secs(2));
+    });
+    let path = std::env::temp_dir().join(format!("jarvis-cancel-{}.json", std::process::id()));
+    fs::write(&path, format!(r#"{{"models":[{{"name":"test","tier":"t1","capabilities":["text"],"allowed_data":["public"],"port":{port}}}]}}"#)).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_jarvis"))
+        .args(["chat", "--config", path.to_str().unwrap(), "hi"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut first = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut first)
+        .unwrap();
+    assert_eq!(first, "partial\n");
+    let start = Instant::now();
+    assert!(Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap()
+        .success());
+    let output = child.wait_with_output().unwrap();
+    assert!(start.elapsed() < Duration::from_secs(1));
+    assert!(!output.status.success());
+    assert_eq!(
+        output.stderr,
+        b"{\"usage\":null}\n{\"error\":\"cancelled\"}\n"
+    );
+    server.join().unwrap();
+    fs::remove_file(path).unwrap();
+}
