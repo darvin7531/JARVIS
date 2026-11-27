@@ -22,6 +22,7 @@ struct Config {}
 enum Error {
     InvalidArguments,
     InvalidConfig,
+    MissingApiKey,
     SignalSetupFailed,
 }
 
@@ -30,6 +31,7 @@ impl Error {
         match self {
             Self::InvalidArguments => "invalid_arguments",
             Self::InvalidConfig => "invalid_config",
+            Self::MissingApiKey => "missing_api_key",
             Self::SignalSetupFailed => "signal_setup_failed",
         }
     }
@@ -39,7 +41,21 @@ fn run() -> Result<(), Error> {
     let mut args = env::args_os().skip(1).peekable();
     if args.peek().is_some_and(|arg| arg == "chat") {
         args.next();
-        if args.next().is_none_or(|arg| arg != "--mock") {
+        let backend = args.next().ok_or(Error::InvalidArguments)?;
+        if backend == "--openai" {
+            if args.next().is_none_or(|arg| arg != "--model")
+                || args.next().is_none()
+                || args.next().is_none()
+                || args.next().is_some()
+            {
+                return Err(Error::InvalidArguments);
+            }
+            if !env::var("OPENAI_API_KEY").is_ok_and(|key| !key.trim().is_empty()) {
+                return Err(Error::MissingApiKey);
+            }
+            return Err(Error::InvalidArguments);
+        }
+        if backend != "--mock" {
             return Err(Error::InvalidArguments);
         }
         let prompt = args.next().ok_or(Error::InvalidArguments)?;
