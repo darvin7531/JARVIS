@@ -203,6 +203,12 @@ pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'stat
     if outcome == Err(BrokerError::OutcomeUncertain) {
         return Err("agent_outcome_uncertain");
     }
+    if outcome == Err(BrokerError::ReconciliationRequired) {
+        return Err("agent_reconciliation_required");
+    }
+    if outcome == Err(BrokerError::Cancelled) {
+        return Err("cancelled");
+    }
     if outcome.is_err() {
         let mut store = SqliteStore::open(&owner.store).map_err(|_| "agent_storage")?;
         store
@@ -233,7 +239,7 @@ pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'stat
         permitted_text: String::new(),
         expires_at: expires,
     };
-    let store = SqliteStore::open(&owner.store).map_err(|_| "agent_storage")?;
+    let store = SqliteStore::open(&owner.store).map_err(|_| "agent_verification_incomplete")?;
     let mut broker = Broker::with_approval(
         read_contract,
         store,
@@ -243,14 +249,14 @@ pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'stat
     );
     let observed = broker.call_cancellable(&read, &cancelled);
     drop(broker);
-    let mut store = SqliteStore::open(&owner.store).map_err(|_| "agent_storage")?;
-    let status = if observed
-        .as_ref()
-        .is_ok_and(|value| value == &owner.expected)
-    {
-        "verified"
-    } else {
-        "verification_failed"
+    let mut store = SqliteStore::open(&owner.store).map_err(|_| "agent_verification_incomplete")?;
+    let status = match observed {
+        Ok(value) if value == owner.expected => "verified",
+        Ok(_) => "verification_failed",
+        Err(BrokerError::OutcomeUncertain | BrokerError::ReconciliationRequired) => {
+            "verification_uncertain"
+        }
+        Err(_) => "verification_incomplete",
     };
     store
         .append_event_at_revision(
@@ -258,7 +264,13 @@ pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'stat
             owner.revision,
             &serde_json::json!({"type":"checkpoint", "status":status}).to_string(),
         )
-        .map_err(|_| "agent_storage")?;
+        .map_err(|_| "agent_verification_incomplete")?;
+    if status == "verification_uncertain" {
+        return Err("agent_verification_uncertain");
+    }
+    if status == "verification_incomplete" {
+        return Err("agent_verification_incomplete");
+    }
     if status != "verified" {
         return Err("agent_verify");
     }
