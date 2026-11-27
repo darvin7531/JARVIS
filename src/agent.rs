@@ -1,5 +1,5 @@
 use jarvis::storage::{SqliteStore, Task};
-use jarvis::tool_policy::{Broker, DataClass, Scope, TaskContract, ToolRequest};
+use jarvis::tool_policy::{Broker, BrokerError, DataClass, Scope, TaskContract, ToolRequest};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::provider::{MockProvider, Provider, Request};
@@ -198,6 +198,9 @@ pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'stat
     #[cfg(test)]
     if let Some(db) = fault_db {
         db.execute_batch("DROP TRIGGER test_reject_outcome").unwrap();
+    }
+    if outcome == Err(BrokerError::OutcomeUncertain) {
+        return Err("agent_outcome_uncertain");
     }
     if outcome.is_err() {
         let mut store = SqliteStore::open(&owner.store).map_err(|_| "agent_storage")?;
