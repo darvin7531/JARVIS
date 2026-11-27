@@ -125,7 +125,7 @@ fn terminal_overusage_is_retained_for_settlement() {
     let server = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
         let mut buf = [0; 4096];
-        stream.read(&mut buf).unwrap();
+        assert!(stream.read(&mut buf).unwrap() > 0);
         let body = "{\"response\":\"unsafe\",\"done\":true,\"done_reason\":\"stop\",\"prompt_eval_count\":11,\"eval_count\":9}\n";
         write!(
             stream,
@@ -181,7 +181,7 @@ fn cli_settles_overusage_and_blocks_next_request() {
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let mut buf = [0; 4096];
-            stream.read(&mut buf).unwrap();
+            assert!(stream.read(&mut buf).unwrap() > 0);
             let body = format!("{{\"response\":\"unsafe\",\"done\":true,\"done_reason\":\"stop\",\"prompt_eval_count\":{input},\"eval_count\":{output}}}\n");
             write!(
                 stream,
@@ -212,4 +212,35 @@ fn cli_settles_overusage_and_blocks_next_request() {
         drop(db);
         fs::remove_dir_all(root).unwrap();
     }
+}
+
+#[test]
+fn competing_first_limits_cannot_both_succeed() {
+    use jarvis::storage::SqliteStore;
+    use std::sync::{Arc, Barrier};
+    let root = std::env::temp_dir().join(format!("jarvis-limit-race-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    drop(SqliteStore::create(&root).unwrap());
+    let barrier = Arc::new(Barrier::new(2));
+    let handles: Vec<_> = [100, 1000]
+        .into_iter()
+        .map(|limit| {
+            let root = root.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                let mut store = SqliteStore::open(&root).unwrap();
+                barrier.wait();
+                store.reserve_tokens(limit, 1).is_ok()
+            })
+        })
+        .collect();
+    assert_eq!(
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .filter(|v| *v)
+            .count(),
+        1
+    );
+    fs::remove_dir_all(root).unwrap();
 }
