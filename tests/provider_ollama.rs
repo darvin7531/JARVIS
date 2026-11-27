@@ -188,3 +188,57 @@ fn missing_usage_rejects_completion_after_provisional_chunk() {
     assert_eq!(result, Err(Error::InvalidStream));
     assert_eq!(text, "first");
 }
+
+#[test]
+fn sends_requested_token_limit_and_handles_fragmented_unicode() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut buf = [0; 512];
+        loop {
+            let n = stream.read(&mut buf).unwrap();
+            assert!(n > 0);
+            request.extend_from_slice(&buf[..n]);
+            if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&request[..end]);
+                let length: usize = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length: ")
+                            .and_then(|v| v.parse().ok())
+                    })
+                    .unwrap();
+                if request.len() >= end + 4 + length {
+                    let payload: serde_json::Value =
+                        serde_json::from_slice(&request[end + 4..end + 4 + length]).unwrap();
+                    assert_eq!(payload["options"]["num_predict"], 8);
+                    break;
+                }
+            }
+        }
+        let body = "{\"response\":\"é\",\"done\":true,\"prompt_eval_count\":1,\"eval_count\":1}\n";
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .unwrap();
+        for byte in body.as_bytes() {
+            stream.write_all(&[*byte]).unwrap();
+        }
+    });
+    let mut text = String::new();
+    Ollama { port }
+        .generate(&request(), &AtomicBool::new(false), &mut |s| {
+            text.push_str(s)
+        })
+        .unwrap();
+    server.join().unwrap();
+    assert_eq!(text, "é");
+}
