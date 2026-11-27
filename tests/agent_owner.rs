@@ -153,7 +153,8 @@ fn owner_loop_skips_non_action_and_stops_after_verified_write() {
     std::fs::write(
         &proposal_path,
         json!([{ "kind":"continue", "grant":"write" }, { "kind":"tool", "request":req("write", "approved") }]).to_string(),
-    ).unwrap();
+    )
+    .unwrap();
     let failed = Command::new(env!("CARGO_BIN_EXE_jarvis"))
         .arg("agent")
         .arg("--owner")
