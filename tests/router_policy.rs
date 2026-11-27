@@ -17,7 +17,13 @@ fn duplicate_manual_names_fail_closed() {
         },
     ];
     assert!(matches!(
-        route(&models, Tier::T1, Some("same"), Capability::Text, DataClass::Public),
+        route(
+            &models,
+            Tier::T1,
+            Some("same"),
+            Capability::Text,
+            DataClass::Public
+        ),
         Err(RouteError::ModelUnavailable)
     ));
 }
