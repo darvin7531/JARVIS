@@ -818,6 +818,8 @@ fn restored_backup_blocks_budget_even_without_pending_reservations() {
     store.backup(&root.join("snapshot")).unwrap();
     let mut restored = SqliteStore::open(&root.join("snapshot")).unwrap();
     assert!(restored.reserve_tokens(100, 1).unwrap().is_none());
+    assert!(restored.settle_tokens(-1, 0).is_err());
+    assert!(restored.reserve_tokens(100, 1).unwrap().is_none());
     drop(restored);
     // Operator reconciliation preserves the snapshot charge and adds omitted usage.
     let db = rusqlite::Connection::open(root.join("snapshot/jarvis.sqlite3")).unwrap();
