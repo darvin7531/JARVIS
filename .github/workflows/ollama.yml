@@ -1,5 +1,5 @@
 name: Ollama smoke
-on: [push, workflow_dispatch]
+on: [push, pull_request, workflow_dispatch]
 permissions:
   contents: read
 jobs:
@@ -17,6 +17,8 @@ jobs:
           for i in $(seq 1 60); do curl -fsS http://127.0.0.1:11434/ && break; sleep 1; done
           docker exec ollama ollama pull smollm2:135m-instruct-q4_0
           curl -fsS http://127.0.0.1:11434/api/tags | python3 -c 'import json,sys; models=json.load(sys.stdin)["models"]; assert any(m["name"] == "smollm2:135m-instruct-q4_0" and m["digest"] == "dbc9f6c89cb0673427e7215f12b0e71f1bcc716b780ec71da36c8dc6d28ab591" for m in models), "unexpected model digest"'
+      - name: Run real provider smoke test
+        run: cargo test --locked --test provider_ollama actual_ollama_smoke_when_enabled -- --ignored --exact
       - name: Run real inference through CLI
         run: |
           cargo build --locked

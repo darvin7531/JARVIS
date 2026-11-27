@@ -122,10 +122,8 @@ fn truncated_budget_timeout_cancel_and_redacted_errors() {
     });
 }
 #[test]
+#[ignore = "requires a running Ollama server with the pinned smoke model"]
 fn actual_ollama_smoke_when_enabled() {
-    if std::env::var_os("JARVIS_OLLAMA_SMOKE").is_none() {
-        return;
-    }
     let r = Request {
         model: "smollm2:135m-instruct-q4_0",
         prompt: "Say hello in one word.",
