@@ -17,7 +17,7 @@ fn request() -> Request<'static> {
         prompt: "private prompt",
         max_tokens: 8,
         max_output_bytes: 64,
-        timeout: Duration::from_secs(2),
+        deadline: std::time::Instant::now() + Duration::from_secs(2),
     }
 }
 #[test]
@@ -25,7 +25,7 @@ fn deadline_elapsing_before_dispatch_never_connects() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let mut r = request();
-    r.timeout = Duration::from_millis(100);
+    r.deadline = std::time::Instant::now() + Duration::from_millis(100);
     thread::sleep(Duration::from_millis(200));
     assert_eq!(
         Ollama {
@@ -104,7 +104,7 @@ fn truncated_budget_timeout_cancel_and_redacted_errors() {
     );
     let port = serve("", Duration::from_secs(1));
     let mut r = request();
-    r.timeout = Duration::from_millis(80);
+    r.deadline = std::time::Instant::now() + Duration::from_millis(80);
     assert_eq!(
         Ollama {
             port,
@@ -148,7 +148,7 @@ fn actual_ollama_smoke_when_enabled() {
         prompt: "Say hello in one word.",
         max_tokens: 16,
         max_output_bytes: 4096,
-        timeout: Duration::from_secs(120),
+        deadline: std::time::Instant::now() + Duration::from_secs(120),
     };
     let mut text = String::new();
     let usage = Ollama {

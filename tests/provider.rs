@@ -13,7 +13,7 @@ fn mock_streams_text_and_usage() {
         prompt: "hi",
         max_tokens: 8,
         max_output_bytes: 64,
-        timeout: Duration::from_secs(1),
+        deadline: std::time::Instant::now() + Duration::from_secs(1),
     };
     let mut text = String::new();
     let usage = provider

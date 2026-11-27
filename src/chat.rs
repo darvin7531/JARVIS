@@ -156,6 +156,7 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
         .map_err(|_| "signal_setup_failed")?;
     let started = Instant::now();
     let timeout = Duration::from_secs(config.limits.timeout_seconds);
+    let deadline = started.checked_add(timeout).ok_or("invalid_config")?;
     let prompt = if stdin_prompt {
         if class == DataClass::Sensitive && unsafe { libc::isatty(0) } == 1 {
             return Err("sensitive_tty");
@@ -367,7 +368,7 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
         prompt: &prompt,
         max_tokens: config.limits.max_tokens,
         max_output_bytes: config.limits.max_output_bytes,
-        timeout: remaining.ok_or("timeout")?,
+        deadline,
     };
     let tty = unsafe { libc::isatty(fd) } == 1;
     let mut failure = None;
