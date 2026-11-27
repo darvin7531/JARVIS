@@ -20,7 +20,7 @@ fn config(port: u16, timeout: u64, name: &str) -> std::path::PathBuf {
         "jarvis-security-{name}-{}.json",
         std::process::id()
     ));
-    fs::write(&path, format!(r#"{{"limits":{{"timeout_seconds":{timeout},"max_output_bytes":524288}},"models":[{{"name":"test","tier":"t1","capabilities":["text"],"allowed_data":["sensitive","public"],"trusted_local":true,"port":{port}}}]}}"#)).unwrap();
+    fs::write(&path, format!(r#"{{"limits":{{"timeout_seconds":{timeout},"max_output_bytes":524288}},"models":[{{"name":"test","tier":"t1","capabilities":["text"],"allowed_data":["sensitive","public"],"trusted_local":true,"trusted_no_truncation":true,"port":{port}}}]}}"#)).unwrap();
     path
 }
 

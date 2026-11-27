@@ -45,7 +45,7 @@ fn byte_limit_accounts_terminal_usage_but_retains_unknown_reservation() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let config = root.join("config.json");
         fs::write(&config, serde_json::json!({
-            "models":[{"name":"model","tier":"t1","capabilities":["text"],"allowed_data":["public"],"port":listener.local_addr().unwrap().port()}],
+            "models":[{"name":"model","tier":"t1","capabilities":["text"],"allowed_data":["public"],"trusted_no_truncation":true,"port":listener.local_addr().unwrap().port()}],
             "limits":{"max_tokens":5,"max_output_bytes":1},
             "budget":{"workspace":root,"limit_tokens":20,"max_input_tokens":10}
         }).to_string()).unwrap();

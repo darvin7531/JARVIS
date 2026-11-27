@@ -44,11 +44,14 @@ fn fragmented_ndjson_and_usage() {
         Duration::ZERO,
     );
     let mut text = String::new();
-    let usage = Ollama { port }
-        .generate(&request(), &AtomicBool::new(false), &mut |s| {
-            text.push_str(s)
-        })
-        .unwrap();
+    let usage = Ollama {
+        port,
+        trusted_no_truncation: true,
+    }
+    .generate(&request(), &AtomicBool::new(false), &mut |s| {
+        text.push_str(s)
+    })
+    .unwrap();
     assert_eq!(text, "Hi!");
     assert_eq!((usage.input_tokens, usage.output_tokens), (2, 3));
 }
@@ -59,27 +62,42 @@ fn truncated_budget_timeout_cancel_and_redacted_errors() {
         "{\"response\":\"private prompt\",\"done\":false}\n",
         Duration::ZERO,
     );
-    let err = Ollama { port }
-        .generate(&request(), &AtomicBool::new(false), &mut emit)
-        .unwrap_err();
+    let err = Ollama {
+        port,
+        trusted_no_truncation: true,
+    }
+    .generate(&request(), &AtomicBool::new(false), &mut emit)
+    .unwrap_err();
     assert_eq!(err, Error::Truncated);
     assert!(!format!("{err:?}").contains("private prompt"));
     let port = serve("{\"response\":\"long\",\"done\":false}\n", Duration::ZERO);
     let mut r = request();
     r.max_output_bytes = 2;
     assert_eq!(
-        Ollama { port }.generate(&r, &AtomicBool::new(false), &mut emit),
+        Ollama {
+            port,
+            trusted_no_truncation: true
+        }
+        .generate(&r, &AtomicBool::new(false), &mut emit),
         Err(Error::Budget)
     );
     let port = serve("", Duration::from_secs(1));
     let mut r = request();
     r.timeout = Duration::from_millis(80);
     assert_eq!(
-        Ollama { port }.generate(&r, &AtomicBool::new(false), &mut emit),
+        Ollama {
+            port,
+            trusted_no_truncation: true
+        }
+        .generate(&r, &AtomicBool::new(false), &mut emit),
         Err(Error::Timeout)
     );
     assert_eq!(
-        Ollama { port }.generate(&r, &AtomicBool::new(true), &mut emit),
+        Ollama {
+            port,
+            trusted_no_truncation: true
+        }
+        .generate(&r, &AtomicBool::new(true), &mut emit),
         Err(Error::Cancelled)
     );
     let port = serve("", Duration::from_secs(1));
@@ -90,7 +108,11 @@ fn truncated_budget_timeout_cancel_and_redacted_errors() {
             cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         });
         assert_eq!(
-            Ollama { port }.generate(&request(), &cancel, &mut emit),
+            Ollama {
+                port,
+                trusted_no_truncation: true
+            }
+            .generate(&request(), &cancel, &mut emit),
             Err(Error::Cancelled)
         );
     });
@@ -108,9 +130,12 @@ fn actual_ollama_smoke_when_enabled() {
         timeout: Duration::from_secs(120),
     };
     let mut text = String::new();
-    let usage = Ollama { port: 11434 }
-        .generate(&r, &AtomicBool::new(false), &mut |s| text.push_str(s))
-        .unwrap();
+    let usage = Ollama {
+        port: 11434,
+        trusted_no_truncation: true,
+    }
+    .generate(&r, &AtomicBool::new(false), &mut |s| text.push_str(s))
+    .unwrap();
     assert!(!text.trim().is_empty());
     assert!(usage.input_tokens > 0 && usage.output_tokens > 0 && usage.output_tokens <= 16);
 }
@@ -122,7 +147,11 @@ fn terminal_text_is_not_emitted_when_usage_is_invalid() {
         Duration::ZERO,
     );
     let mut text = String::new();
-    let result = Ollama { port }.generate(&request(), &AtomicBool::new(false), &mut |s| {
+    let result = Ollama {
+        port,
+        trusted_no_truncation: true,
+    }
+    .generate(&request(), &AtomicBool::new(false), &mut |s| {
         text.push_str(s)
     });
     assert!(result.is_err());
@@ -144,7 +173,11 @@ fn callback_panic_closes_transport() {
         matches!(stream.read(&mut buf), Ok(0))
     });
     let result = std::panic::catch_unwind(|| {
-        let _ = Ollama { port }.generate(&request(), &AtomicBool::new(false), &mut |_| {
+        let _ = Ollama {
+            port,
+            trusted_no_truncation: true,
+        }
+        .generate(&request(), &AtomicBool::new(false), &mut |_| {
             panic!("callback")
         });
     });
@@ -173,7 +206,11 @@ fn incomplete_http_body_is_transport_error_even_after_done() {
         .unwrap();
     });
     assert_eq!(
-        Ollama { port }.generate(&request(), &AtomicBool::new(false), &mut |_| {}),
+        Ollama {
+            port,
+            trusted_no_truncation: true
+        }
+        .generate(&request(), &AtomicBool::new(false), &mut |_| {}),
         Err(Error::Transport)
     );
 }
@@ -185,7 +222,11 @@ fn missing_usage_rejects_completion_after_provisional_chunk() {
         Duration::ZERO,
     );
     let mut text = String::new();
-    let result = Ollama { port }.generate(&request(), &AtomicBool::new(false), &mut |s| {
+    let result = Ollama {
+        port,
+        trusted_no_truncation: true,
+    }
+    .generate(&request(), &AtomicBool::new(false), &mut |s| {
         text.push_str(s)
     });
     assert_eq!(result, Err(Error::InvalidStream));
@@ -239,11 +280,14 @@ fn sends_requested_token_limit_and_handles_fragmented_unicode() {
         }
     });
     let mut text = String::new();
-    Ollama { port }
-        .generate(&request(), &AtomicBool::new(false), &mut |s| {
-            text.push_str(s)
-        })
-        .unwrap();
+    Ollama {
+        port,
+        trusted_no_truncation: true,
+    }
+    .generate(&request(), &AtomicBool::new(false), &mut |s| {
+        text.push_str(s)
+    })
+    .unwrap();
     server.join().unwrap();
     assert_eq!(text, "é");
 }
@@ -255,7 +299,11 @@ fn length_finish_is_incomplete_and_preserves_usage() {
         Duration::ZERO,
     );
     let mut text = String::new();
-    let result = Ollama { port }.generate(&request(), &AtomicBool::new(false), &mut |s| {
+    let result = Ollama {
+        port,
+        trusted_no_truncation: true,
+    }
+    .generate(&request(), &AtomicBool::new(false), &mut |s| {
         text.push_str(s)
     });
     assert_eq!(text, "partial");
@@ -281,10 +329,24 @@ fn terminal_finish_reason_must_be_recognized() {
         let port = serve(Box::leak(body.into_boxed_str()), Duration::ZERO);
         let mut text = String::new();
         assert_eq!(
-            Ollama { port }.generate(&request(), &AtomicBool::new(false), &mut |s| text
+            Ollama {
+                port,
+                trusted_no_truncation: true
+            }
+            .generate(&request(), &AtomicBool::new(false), &mut |s| text
                 .push_str(s)),
             Err(Error::InvalidStream)
         );
         assert!(text.is_empty());
     }
+}
+
+#[test]
+fn untrusted_runtime_is_rejected_before_connecting() {
+    let result = Ollama {
+        port: 1,
+        trusted_no_truncation: false,
+    }
+    .generate(&request(), &AtomicBool::new(false), &mut |_| {});
+    assert_eq!(result, Err(Error::InvalidRequest));
 }

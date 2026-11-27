@@ -55,6 +55,8 @@ struct Model {
     port: u16,
     #[serde(default)]
     trusted_local: bool,
+    #[serde(default)]
+    trusted_no_truncation: bool,
 }
 fn tier(s: &str) -> Option<Tier> {
     match s {
@@ -306,6 +308,9 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
         .iter()
         .position(|p| std::ptr::eq(p, selected))
         .ok_or("invalid_config")?;
+    if !config.models[index].trusted_no_truncation {
+        return Err("unsupported_runtime");
+    }
     let req = Request {
         model: selected.name,
         prompt: &prompt,
@@ -334,6 +339,7 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
     let mut failure = None;
     let result = Ollama {
         port: config.models[index].port,
+        trusted_no_truncation: config.models[index].trusted_no_truncation,
     }
     .generate_bounded(
         &req,

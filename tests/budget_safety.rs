@@ -26,7 +26,7 @@ fn interrupted_process_retains_reservation(kill: bool) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let config = root.join("config.json");
     fs::write(&config, serde_json::json!({
-        "models": [{"name":"model","tier":"t1","capabilities":["text"],"allowed_data":["public"],"port":listener.local_addr().unwrap().port()}],
+        "models": [{"name":"model","tier":"t1","capabilities":["text"],"allowed_data":["public"],"trusted_no_truncation":true,"port":listener.local_addr().unwrap().port()}],
         "limits":{"max_tokens":5},
         "budget":{"workspace":root,"limit_tokens":100,"max_input_tokens":10}
     }).to_string()).unwrap();
@@ -71,7 +71,7 @@ fn real_ollama_budgeted_cli() {
     drop(SqliteStore::create(&root).unwrap());
     let config = root.join("config.json");
     fs::write(&config, serde_json::json!({
-        "models":[{"name":"smollm2:135m-instruct-q4_0","tier":"t1","capabilities":["text"],"allowed_data":["public"],"port":11434}],
+        "models":[{"name":"smollm2:135m-instruct-q4_0","tier":"t1","capabilities":["text"],"allowed_data":["public"],"trusted_no_truncation":true,"port":11434}],
         "budget":{"workspace":root,"limit_tokens":2176,"max_input_tokens":2048}
     }).to_string()).unwrap();
     let result = Command::new(env!("CARGO_BIN_EXE_jarvis"))
@@ -107,7 +107,7 @@ fn real_ollama_rejects_oversized_prompt() {
     drop(SqliteStore::create(&root).unwrap());
     let config = root.join("config.json");
     fs::write(&config, serde_json::json!({
-        "models":[{"name":"smollm2:135m-instruct-q4_0","tier":"t1","capabilities":["text"],"allowed_data":["public"],"port":11434}],
+        "models":[{"name":"smollm2:135m-instruct-q4_0","tier":"t1","capabilities":["text"],"allowed_data":["public"],"trusted_no_truncation":true,"port":11434}],
         "budget":{"workspace":root,"limit_tokens":2176,"max_input_tokens":2048}
     }).to_string()).unwrap();
     let prompt = "hello ".repeat(12000);
