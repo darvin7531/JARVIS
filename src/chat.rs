@@ -4,7 +4,7 @@ use serde::Deserialize;
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use std::{
     ffi::OsString,
-    fs::{File, OpenOptions},
+    fs::OpenOptions,
     io::Read,
     os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
     sync::{
@@ -86,7 +86,7 @@ fn data(s: &str) -> Option<DataClass> {
 pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str> {
     let path = args.next().ok_or("invalid_arguments")?;
     let mut bytes = Vec::new();
-    File::open(path)
+    crate::open_config(path)
         .map_err(|_| "invalid_config")?
         .take(65537)
         .read_to_end(&mut bytes)

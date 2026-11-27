@@ -13,7 +13,7 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 ```
 
-Service logs are JSON lifecycle events or a fixed error code. Chat has a separate local inference interface described below; there is no task engine or secret manager.
+Service logs are JSON lifecycle events or a fixed error code. Observed lifecycle output errors cause failure at shutdown. To keep shutdown bounded when stdout is blocked, the service waits 100 ms for the output worker; on timeout it exits successfully and pending lifecycle events may be lost, with later output errors unobserved. Chat has a separate local inference interface described below; there is no task engine or secret manager.
 
 Storage workspaces are private directories (no group or other permissions); opening an existing workspace with broader permissions fails without changing them. The database must be a regular file, not a symlink. Schema objects and SQLite integrity and foreign keys are checked before migration. These checks assume the workspace is not concurrently modified by untrusted processes; they do not protect against another process with the same user privileges or pre-existing hard links and ACLs.
 
