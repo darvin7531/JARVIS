@@ -23,6 +23,7 @@ enum Error {
     InvalidArguments,
     InvalidConfig,
     MissingApiKey,
+    CapabilityUnavailable,
     SignalSetupFailed,
 }
 
@@ -32,6 +33,7 @@ impl Error {
             Self::InvalidArguments => "invalid_arguments",
             Self::InvalidConfig => "invalid_config",
             Self::MissingApiKey => "missing_api_key",
+            Self::CapabilityUnavailable => "capability_unavailable",
             Self::SignalSetupFailed => "signal_setup_failed",
         }
     }
@@ -58,7 +60,26 @@ fn run() -> Result<(), Error> {
         if backend != "--mock" {
             return Err(Error::InvalidArguments);
         }
-        let prompt = args.next().ok_or(Error::InvalidArguments)?;
+        let mut prompt = args.next().ok_or(Error::InvalidArguments)?;
+        if prompt == "--require" {
+            use jarvis::inference::{route, Capability, DataClass, ModelProfile, Tier};
+            let requested = args.next().ok_or(Error::InvalidArguments)?;
+            let capability = match requested.to_str() {
+                Some("text") => Capability::Text,
+                Some("vision") => Capability::Vision,
+                Some("tools") => Capability::Tools,
+                _ => return Err(Error::InvalidArguments),
+            };
+            let models = [ModelProfile {
+                name: "mock",
+                tier: Tier::T1,
+                capabilities: &[Capability::Text],
+                allowed_data: &[DataClass::Public],
+            }];
+            route(&models, Tier::T1, None, capability, DataClass::Public)
+                .map_err(|_| Error::CapabilityUnavailable)?;
+            prompt = args.next().ok_or(Error::InvalidArguments)?;
+        }
         if args.next().is_some() {
             return Err(Error::InvalidArguments);
         }

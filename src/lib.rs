@@ -12,4 +12,5 @@ pub struct Event {
     pub event: Lifecycle,
 }
 
+pub mod inference;
 pub mod storage;
