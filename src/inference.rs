@@ -48,8 +48,9 @@ pub fn route<'a>(
     {
         return Err(RouteError::ModelUnavailable);
     }
-    let eligible =
-        |model: &&ModelProfile<'_>| manual.map_or(model.tier == tier, |name| model.name == name);
+    let eligible = |model: &&ModelProfile<'_>| {
+        model.tier != Tier::T0 && manual.map_or(model.tier == tier, |name| model.name == name)
+    };
     if !models.iter().any(|model| eligible(&model)) {
         return Err(RouteError::ModelUnavailable);
     }
