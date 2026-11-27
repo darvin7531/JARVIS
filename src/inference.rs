@@ -26,13 +26,11 @@ pub enum Tier {
 /// ponytail: a small keyword list misses synonyms; extend it from observed tasks.
 pub fn classify(prompt: &str) -> Tier {
     let prompt = prompt.trim_start();
-    let heavy = prompt
-        .split(|c: char| !c.is_alphanumeric())
-        .any(|word| {
-            ["architecture", "incident", "critical"]
-                .iter()
-                .any(|hint| word.eq_ignore_ascii_case(hint))
-        });
+    let heavy = prompt.split(|c: char| !c.is_alphanumeric()).any(|word| {
+        ["architecture", "incident", "critical"]
+            .iter()
+            .any(|hint| word.eq_ignore_ascii_case(hint))
+    });
     if prompt.starts_with("complex:") || heavy {
         Tier::T3
     } else if prompt.starts_with("code:") {
