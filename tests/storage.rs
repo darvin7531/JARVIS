@@ -793,3 +793,69 @@ fn reopen_rejects_integrity_errors_without_repairing_data() {
     drop(db);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn backup_accepts_bare_relative_destination() {
+    const CHILD: &str = "JARVIS_RELATIVE_BACKUP_TEST";
+    if std::env::var_os(CHILD).is_some() {
+        let store = SqliteStore::create(std::path::Path::new("source")).unwrap();
+        store.backup(std::path::Path::new("snapshot")).unwrap();
+        assert!(store.backup(std::path::Path::new("snapshot")).is_err());
+        drop(store);
+        assert!(SqliteStore::open(std::path::Path::new("snapshot")).is_ok());
+        return;
+    }
+    let root = std::env::temp_dir().join(format!("jarvis-relative-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    private_dir(&root);
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "backup_accepts_bare_relative_destination"])
+        .env(CHILD, "1")
+        .current_dir(&root)
+        .status()
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(status.success());
+}
+
+#[test]
+fn backup_rejects_shared_writable_parent() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!("jarvis-backup-parent-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir(&root).unwrap();
+    let store = SqliteStore::create(&root.join("source")).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o777)).unwrap();
+    assert!(store.backup(&root.join("snapshot")).is_err());
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn restored_backup_blocks_budget_even_without_pending_reservations() {
+    let root = std::env::temp_dir().join(format!("jarvis-backup-budget-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir(&root).unwrap();
+    let mut store = SqliteStore::create(&root.join("source")).unwrap();
+    let id = store.reserve_tokens(100, 10).unwrap().unwrap();
+    store.settle_tokens(id, 5).unwrap();
+    store.backup(&root.join("snapshot")).unwrap();
+    let mut restored = SqliteStore::open(&root.join("snapshot")).unwrap();
+    assert!(restored.reserve_tokens(100, 1).unwrap().is_none());
+    assert!(restored.settle_tokens(-1, 0).is_err());
+    assert!(restored.reserve_tokens(100, 1).unwrap().is_none());
+    drop(restored);
+    // Operator reconciliation preserves the snapshot charge and adds omitted usage.
+    let db = rusqlite::Connection::open(root.join("snapshot/jarvis.sqlite3")).unwrap();
+    db.execute(
+        "UPDATE inference_budget SET tokens = 20, pending = 0 WHERE id = -1",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    let mut restored = SqliteStore::open(&root.join("snapshot")).unwrap();
+    assert!(restored.reserve_tokens(100, 76).unwrap().is_none());
+    assert!(restored.reserve_tokens(100, 75).unwrap().is_some());
+    drop(restored);
+    std::fs::remove_dir_all(root).unwrap();
+}
