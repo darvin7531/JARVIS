@@ -35,7 +35,7 @@ pub fn approve(path: &OsStr) -> Result<(), &'static str> {
         .filter(|expiry| *expiry > SystemTime::now())
         .ok_or("agent_input")?;
     let details = serde_json::json!({
-        "task": input.task, "revision": input.revision, "approval": input.approval,
+        "store": input.store, "task": input.task, "revision": input.revision, "approval": input.approval,
         "expires_unix": input.expires_unix, "request": input.request,
     });
     let serialized = serde_json::to_string(&details).map_err(|_| "agent_input")?;
@@ -54,13 +54,23 @@ pub fn approve(path: &OsStr) -> Result<(), &'static str> {
         .and_then(|_| out.flush())
         .map_err(|_| "agent_output")?;
     let mut decision = Vec::new();
-    std::io::stdin().lock().take(16).read_until(b'\n', &mut decision)
+    std::io::stdin()
+        .lock()
+        .take(16)
+        .read_until(b'\n', &mut decision)
         .map_err(|_| "agent_input")?;
     if decision != b"approve\n" {
         return Err("agent_denied");
     }
     let mut store = SqliteStore::open(&input.store).map_err(|_| "agent_storage")?;
-    store.issue_tool_approval(&input.approval, &input.task, input.revision, &input.request, expires)
+    store
+        .issue_tool_approval(
+            &input.approval,
+            &input.task,
+            input.revision,
+            &input.request,
+            expires,
+        )
         .map_err(|_| "agent_storage")?;
     Ok(())
 }
