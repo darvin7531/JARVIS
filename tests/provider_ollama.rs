@@ -39,7 +39,10 @@ fn serve(body: &'static str, delay: Duration) -> u16 {
 }
 #[test]
 fn fragmented_ndjson_and_usage() {
-    let port = serve("{\"response\":\"Hi\",\"done\":false}\n{\"response\":\"!\",\"done\":true,\"prompt_eval_count\":2,\"eval_count\":3}\n", Duration::ZERO);
+    let port = serve(
+        "{\"response\":\"Hi\",\"done\":false}\n{\"response\":\"!\",\"done\":true,\"prompt_eval_count\":2,\"eval_count\":3}\n",
+        Duration::ZERO,
+    );
     let mut text = String::new();
     let usage = Ollama { port }
         .generate(&request(), &AtomicBool::new(false), &mut |s| {
@@ -245,7 +248,10 @@ fn sends_requested_token_limit_and_handles_fragmented_unicode() {
 
 #[test]
 fn length_finish_is_incomplete_and_preserves_usage() {
-    let port = serve("{\"response\":\"partial\",\"done\":true,\"done_reason\":\"length\",\"prompt_eval_count\":2,\"eval_count\":3}\n", Duration::ZERO);
+    let port = serve(
+        "{\"response\":\"partial\",\"done\":true,\"done_reason\":\"length\",\"prompt_eval_count\":2,\"eval_count\":3}\n",
+        Duration::ZERO,
+    );
     let mut text = String::new();
     let result = Ollama { port }.generate(&request(), &AtomicBool::new(false), &mut |s| {
         text.push_str(s)
@@ -261,11 +267,22 @@ fn length_finish_is_incomplete_and_preserves_usage() {
 
 #[test]
 fn terminal_finish_reason_must_be_recognized() {
-    for reason in ["", ",\"done_reason\":null", ",\"done_reason\":42", ",\"done_reason\":\"unknown\""] {
-        let body = format!("{{\"response\":\"last\",\"done\":true{reason},\"prompt_eval_count\":2,\"eval_count\":3}}\n");
+    for reason in [
+        "",
+        ",\"done_reason\":null",
+        ",\"done_reason\":42",
+        ",\"done_reason\":\"unknown\"",
+    ] {
+        let body = format!(
+            "{{\"response\":\"last\",\"done\":true{reason},\"prompt_eval_count\":2,\"eval_count\":3}}\n"
+        );
         let port = serve(Box::leak(body.into_boxed_str()), Duration::ZERO);
         let mut text = String::new();
-        assert_eq!(Ollama { port }.generate(&request(), &AtomicBool::new(false), &mut |s| text.push_str(s)), Err(Error::InvalidStream));
+        assert_eq!(
+            Ollama { port }.generate(&request(), &AtomicBool::new(false), &mut |s| text
+                .push_str(s)),
+            Err(Error::InvalidStream)
+        );
         assert!(text.is_empty());
     }
 }
