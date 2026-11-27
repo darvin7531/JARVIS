@@ -113,9 +113,18 @@ pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'stat
                 }
             })?;
         // Legacy single-request input remains supported but never supplies authority.
-        let parsed = serde_json::from_str::<Proposal>(&output).or_else(|_| {
-            serde_json::from_str::<ToolRequest>(&output).map(|request| Proposal::Tool { request })
-        });
+        let parsed = serde_json::from_str::<serde_json::Value>(&output)
+            .map_err(|_| ())
+            .and_then(|value| {
+                if value.get("kind").and_then(|v| v.as_str()) == Some("continue")
+                    && value.as_object().is_none_or(|object| object.len() != 1)
+                {
+                    return Err(());
+                }
+                serde_json::from_value::<Proposal>(value.clone())
+                    .or_else(|_| serde_json::from_value::<ToolRequest>(value).map(|request| Proposal::Tool { request }))
+                    .map_err(|_| ())
+            });
         match parsed {
             Ok(Proposal::Tool { request }) => {
                 proposal = Some(request);
