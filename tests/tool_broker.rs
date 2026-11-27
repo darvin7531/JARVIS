@@ -17,6 +17,19 @@ fn contract() -> TaskContract {
 fn request() -> ToolRequest {
     serde_json::from_value(json!({"tool":"inert", "action":"echo", "resource":"task/item", "data_class":"public", "arguments":{"text":"hello"}})).unwrap()
 }
+fn create_task(store: &mut jarvis::storage::SqliteStore) {
+    store
+        .create_task(
+            &jarvis::storage::Task {
+                id: "task".into(),
+                version: 1,
+                title: "test".into(),
+            },
+            "created",
+            &[],
+        )
+        .unwrap();
+}
 fn approved(contract: TaskContract, request: ToolRequest) -> Broker {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -26,6 +39,7 @@ fn approved(contract: TaskContract, request: ToolRequest) -> Broker {
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
+    create_task(&mut store);
     store
         .issue_tool_approval(
             "one",
@@ -153,6 +167,7 @@ fn approval_is_exact_and_single_use() {
 fn approval_cannot_be_replayed_after_broker_recreation() {
     let path = std::env::temp_dir().join(format!("jarvis-approval-reopen-{}", std::process::id()));
     let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
+    create_task(&mut store);
     store
         .issue_tool_approval(
             "one",
@@ -175,6 +190,7 @@ fn approval_race_and_identity_are_enforced() {
     use std::sync::{Arc, Barrier};
     let path = std::env::temp_dir().join(format!("jarvis-approval-race-{}", std::process::id()));
     let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
+    create_task(&mut store);
     store
         .issue_tool_approval(
             "one",
@@ -221,6 +237,7 @@ fn approval_race_and_identity_are_enforced() {
 fn expired_and_mismatched_approvals_never_execute() {
     let path = std::env::temp_dir().join(format!("jarvis-approval-expiry-{}", std::process::id()));
     let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
+    create_task(&mut store);
     store
         .issue_tool_approval(
             "expired",

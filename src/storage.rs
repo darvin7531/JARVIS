@@ -240,8 +240,16 @@ impl SqliteStore {
             return Ok(false);
         }
         let changed = tx.execute("UPDATE tool_approvals SET consumed = 1 WHERE id = ?1 AND task_id = ?2 AND revision = ?3 AND request = ?4 AND expires > ?5 AND consumed = 0", params![id, task, revision, request, now])?;
+        if changed != 1 {
+            return Ok(false);
+        }
+        let event = serde_json::json!({"type": "tool_execution_intent", "approval_id": id}).to_string();
+        tx.execute(
+            "INSERT INTO events (task_id, event, revision, occurred_at) VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            params![task, event, revision],
+        )?;
         tx.commit()?;
-        Ok(changed == 1)
+        Ok(true)
     }
 
     /// Atomically reserve a conservative token allowance across all processes.
