@@ -27,7 +27,6 @@ jobs:
       - run: cargo test --locked --test tool_broker approval_rejected_after_task_revision_changes
       - run: cargo test --locked --test tool_broker audit_write_failure_prevents_execution_and_preserves_approval
       - run: cargo build --locked
-      - run: cargo fmt --all && echo FORMAT_PATCH=$(git diff --binary | base64 -w0)
       - run: cargo fmt --all -- --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked

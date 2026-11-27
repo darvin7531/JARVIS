@@ -212,7 +212,10 @@ pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'stat
     let observed = broker.call_cancellable(&read, &cancelled);
     drop(broker);
     let mut store = SqliteStore::open(&owner.store).map_err(|_| "agent_storage")?;
-    let status = if observed.as_ref().is_ok_and(|value| value == &owner.expected) {
+    let status = if observed
+        .as_ref()
+        .is_ok_and(|value| value == &owner.expected)
+    {
         "verified"
     } else {
         "verification_failed"

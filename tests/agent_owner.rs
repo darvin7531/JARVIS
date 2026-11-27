@@ -191,25 +191,56 @@ fn owner_loop_skips_non_action_and_stops_after_verified_write() {
 
 #[test]
 fn missing_read_approval_records_failed_verification_without_replay() {
-    let path = std::env::temp_dir().join(format!("jarvis-owner-missing-read-{}", std::process::id()));
+    let path =
+        std::env::temp_dir().join(format!("jarvis-owner-missing-read-{}", std::process::id()));
     let mut store = SqliteStore::create(&path).unwrap();
-    store.create_task(&Task { id: "task".into(), version: 1, title: "test".into() }, "created", &[]).unwrap();
+    store
+        .create_task(
+            &Task {
+                id: "task".into(),
+                version: 1,
+                title: "test".into(),
+            },
+            "created",
+            &[],
+        )
+        .unwrap();
     store.initialize_tool_budget(2).unwrap();
     let expires = SystemTime::now() + Duration::from_secs(300);
-    let req = ToolRequest { tool: "write".into(), action: "write".into(), resource: "mock/item".into(), data_class: DataClass::Public, arguments: json!({"text":"value"}) };
-    store.issue_tool_approval("write", "task", 1, &req, expires).unwrap();
+    let req = ToolRequest {
+        tool: "write".into(),
+        action: "write".into(),
+        resource: "mock/item".into(),
+        data_class: DataClass::Public,
+        arguments: json!({"text":"value"}),
+    };
+    store
+        .issue_tool_approval("write", "task", 1, &req, expires)
+        .unwrap();
     drop(store);
     let owner = json!({"store":path, "task":"task", "revision":1, "approval":"write", "read_approval":"missing", "resource":"mock/item", "data_class":"public", "permitted_text":"value", "expected":"value", "expires_unix":expires.duration_since(UNIX_EPOCH).unwrap().as_secs(), "context":"test"});
     let owner_path = path.join("owner.json");
     let proposal_path = path.join("proposal.json");
     std::fs::write(&owner_path, owner.to_string()).unwrap();
     std::fs::write(&proposal_path, serde_json::to_string(&req).unwrap()).unwrap();
-    let run = || Command::new(env!("CARGO_BIN_EXE_jarvis")).arg("agent").arg("--owner").arg(&owner_path).arg("--mock-response").arg(&proposal_path).output().unwrap();
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_jarvis"))
+            .arg("agent")
+            .arg("--owner")
+            .arg(&owner_path)
+            .arg("--mock-response")
+            .arg(&proposal_path)
+            .output()
+            .unwrap()
+    };
     let output = run();
     assert!(!output.status.success());
     let store = SqliteStore::open(&path).unwrap();
     let events = store.events("task").unwrap();
-    assert!(events.iter().any(|e| e.contains("verification_failed")), "{events:?}");
+    assert!(
+        events.iter().any(|e| e.contains("verification_failed")),
+        "{events:?}"
+    );
     drop(store);
     assert!(!run().status.success());
     let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
@@ -223,10 +254,21 @@ fn missing_read_approval_records_failed_verification_without_replay() {
 fn stale_revision_cannot_checkpoint_newer_task() {
     let path = std::env::temp_dir().join(format!("jarvis-owner-stale-{}", std::process::id()));
     let mut store = SqliteStore::create(&path).unwrap();
-    store.create_task(&Task { id: "task".into(), version: 1, title: "test".into() }, "created", &[]).unwrap();
+    store
+        .create_task(
+            &Task {
+                id: "task".into(),
+                version: 1,
+                title: "test".into(),
+            },
+            "created",
+            &[],
+        )
+        .unwrap();
     drop(store);
     let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
-    db.execute("UPDATE tasks SET version = 2 WHERE id = 'task'", []).unwrap();
+    db.execute("UPDATE tasks SET version = 2 WHERE id = 'task'", [])
+        .unwrap();
     drop(db);
     let expires = SystemTime::now() + Duration::from_secs(300);
     let owner = json!({"store":path, "task":"task", "revision":1, "approval":"write", "read_approval":"read", "resource":"mock/item", "data_class":"public", "permitted_text":"value", "expected":"value", "expires_unix":expires.duration_since(UNIX_EPOCH).unwrap().as_secs(), "context":"test"});
@@ -234,10 +276,21 @@ fn stale_revision_cannot_checkpoint_newer_task() {
     let proposal_path = path.join("proposal.json");
     std::fs::write(&owner_path, owner.to_string()).unwrap();
     std::fs::write(&proposal_path, json!({"kind":"continue"}).to_string()).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_jarvis")).arg("agent").arg("--owner").arg(&owner_path).arg("--mock-response").arg(&proposal_path).output().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_jarvis"))
+        .arg("agent")
+        .arg("--owner")
+        .arg(&owner_path)
+        .arg("--mock-response")
+        .arg(&proposal_path)
+        .output()
+        .unwrap();
     assert!(!output.status.success());
     let store = SqliteStore::open(&path).unwrap();
-    assert!(!store.events("task").unwrap().iter().any(|e| e.contains("checkpoint")));
+    assert!(!store
+        .events("task")
+        .unwrap()
+        .iter()
+        .any(|e| e.contains("checkpoint")));
     drop(store);
     std::fs::remove_dir_all(path).unwrap();
 }
