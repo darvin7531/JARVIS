@@ -60,35 +60,30 @@ fn event(receiver: &mpsc::Receiver<String>, name: &str) {
 
 #[test]
 fn closed_stdout_reports_failure_on_shutdown() {
+    use std::{net::Shutdown, os::unix::net::UnixStream};
+
+    let (reader, writer) = UnixStream::pair().unwrap();
+    // A concurrent fork can retain a duplicate; shutdown closes all copies' read side.
+    let extra_reader = reader.try_clone().unwrap();
     let mut child = Process(
         Command::new(env!("CARGO_BIN_EXE_jarvis"))
             .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
+            .stdout(Stdio::from(writer))
             .stderr(Stdio::piped())
             .spawn()
             .unwrap(),
     );
-    use std::os::fd::AsRawFd;
-    let pipe = std::fs::read_link(format!("/proc/self/fd/{}", child.0.stdout.as_ref().unwrap().as_raw_fd())).unwrap();
-    let mut stdout = BufReader::new(child.0.stdout.take().unwrap());
+    let mut stdout = BufReader::new(reader);
     let mut started = String::new();
     stdout.read_line(&mut started).unwrap();
     assert_eq!(started, "{\"event\":\"started\"}\n");
-    drop(stdout);
+    stdout.get_ref().shutdown(Shutdown::Read).unwrap();
     child.0.stdin.take().unwrap().write_all(b"\n").unwrap();
-    let status = wait(&mut child);
-    if status.success() {
-        for process in std::fs::read_dir("/proc").unwrap().flatten() {
-            if let Ok(fds) = std::fs::read_dir(process.path().join("fd")) {
-                for fd in fds.flatten() {
-                    if std::fs::read_link(fd.path()).ok().as_ref() == Some(&pipe) {
-                        eprintln!("[stdout-debug] pid={} fd={} command={:?}", process.file_name().to_string_lossy(), fd.file_name().to_string_lossy(), std::fs::read_to_string(process.path().join("cmdline")));
-                    }
-                }
-            }
-        }
-    }
-    assert!(!status.success(), "closed stdout was reported as success");
+    assert!(
+        !wait(&mut child).success(),
+        "closed stdout was reported as success"
+    );
+    drop(extra_reader);
     let mut stderr = String::new();
     std::io::Read::read_to_string(&mut child.0.stderr.take().unwrap(), &mut stderr).unwrap();
     assert_eq!(stderr, "{\"error\":\"output_failed\"}\n");
