@@ -56,7 +56,7 @@ pub enum BrokerError {
     OutcomeUncertain,
 }
 
-pub(crate) fn inert_text(arguments: &Value) -> Option<&str> {
+fn inert_text(arguments: &Value) -> Option<&str> {
     let object = arguments.as_object()?;
     if object.len() != 1 {
         return None;
@@ -70,8 +70,23 @@ pub enum RegisteredTool {
     Inert { text: String },
 }
 
-pub fn validate_tool(_name: &str, _arguments: &Value) -> Result<RegisteredTool, BrokerError> {
-    Err(BrokerError::UnknownTool)
+pub fn validate_tool(name: &str, arguments: &Value) -> Result<RegisteredTool, BrokerError> {
+    match name {
+        "inert" => Ok(RegisteredTool::Inert {
+            text: inert_text(arguments)
+                .ok_or(BrokerError::InvalidArguments)?
+                .to_owned(),
+        }),
+        _ => Err(BrokerError::UnknownTool),
+    }
+}
+
+impl RegisteredTool {
+    fn execute(self) -> String {
+        match self {
+            Self::Inert { text } => text,
+        }
+    }
 }
 
 // The owner must keep broker construction outside the untrusted request path.
@@ -111,9 +126,7 @@ impl Broker {
     }
 
     pub fn call(&mut self, request: &ToolRequest) -> Result<String, BrokerError> {
-        if request.tool != "inert" {
-            return Err(BrokerError::UnknownTool);
-        }
+        let tool = validate_tool(&request.tool, &request.arguments)?;
         if request.resource.is_empty() || request.resource.len() > 128 {
             return Err(BrokerError::InvalidResource);
         }
@@ -129,8 +142,8 @@ impl Broker {
         {
             return Err(BrokerError::Denied);
         }
-        let text = inert_text(&request.arguments).ok_or(BrokerError::InvalidArguments)?;
-        if text != contract.permitted_text {
+        let RegisteredTool::Inert { text } = &tool;
+        if text != &contract.permitted_text {
             return Err(BrokerError::Denied);
         }
         let (store, id, task, revision) = self.approval.as_mut().ok_or(BrokerError::Denied)?;
@@ -148,7 +161,7 @@ impl Broker {
             return Err(BrokerError::Denied);
         }
         self.executions += 1;
-        let result = text.to_owned();
+        let result = tool.execute();
         store
             .record_tool_outcome(id, task, *revision)
             .map_err(|_| BrokerError::OutcomeUncertain)?;

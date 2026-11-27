@@ -228,7 +228,7 @@ impl SqliteStore {
             || request.action != "echo"
             || request.resource.is_empty()
             || request.resource.len() > 128
-            || crate::tool_policy::inert_text(&request.arguments).is_none()
+            || crate::tool_policy::validate_tool(&request.tool, &request.arguments).is_err()
         {
             return Err(StorageError::OperationFailed);
         }
