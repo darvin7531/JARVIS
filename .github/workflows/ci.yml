@@ -12,6 +12,7 @@ jobs:
         with:
           toolchain: 1.89.0
           components: rustfmt, clippy
+      - run: cargo fmt --all && echo FORMAT_PATCH=$(git diff --binary | base64 -w0)
       - run: cargo test --locked --test storage --test shared_budget --test tool_broker
       - run: cargo test --locked --test agent_owner
       - run: cargo test --locked --test mock_state

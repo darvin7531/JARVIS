@@ -86,12 +86,13 @@ pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'stat
     };
     let mut proposal = None;
     let mut failures = 0;
-    for (index, item) in responses.into_iter().enumerate() {
-        if index >= owner.max_steps as usize {
-            break;
-        }
+    for item in responses {
         if cancelled.load(Ordering::Relaxed) {
             return Err("cancelled");
+        }
+        let mut store = SqliteStore::open(&owner.store).map_err(|_| "agent_storage")?;
+        if !store.agent_step(&owner.task, owner.revision, owner.max_steps, owner.max_failures).map_err(|_| "agent_storage")? {
+            return Err("agent_steps");
         }
         let text = item.to_string();
         let provider = MockProvider::new(&text);
@@ -128,6 +129,7 @@ pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'stat
                     })
                     .map_err(|_| ())
             });
+        store.finish_agent_step(&owner.task, owner.revision, parsed.is_err(), matches!(&parsed, Ok(Proposal::Tool { .. }))).map_err(|_| "agent_storage")?;
         match parsed {
             Ok(Proposal::Tool { request }) => {
                 proposal = Some(request);
@@ -141,8 +143,6 @@ pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'stat
                 }
             }
         }
-        let mut store = SqliteStore::open(&owner.store).map_err(|_| "agent_storage")?;
-        store.append_event_at_revision(&owner.task, owner.revision, &serde_json::json!({"type":"checkpoint", "status":"thinking", "steps":index + 1, "failures":failures}).to_string()).map_err(|_| "agent_storage")?;
     }
     let proposal = proposal.ok_or("agent_steps")?;
     if cancelled.load(Ordering::Relaxed) {
