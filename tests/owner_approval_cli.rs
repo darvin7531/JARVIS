@@ -9,7 +9,7 @@ fn explicit_owner_decision_issues_only_exact_approval() {
     store.create_task(&Task { id: "task".into(), version: 1, title: "test".into() }, "created", &[]).unwrap();
     drop(store);
     let expires = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + 300;
-    let request = json!({"tool":"write","action":"write","resource":"mock/item","data_class":"public","arguments":{"text":"hello\u001b[2J"}});
+    let request = json!({"tool":"write","action":"write","resource":"mock/item","data_class":"public","arguments":{"text":"hello\u{001b}[2J"}});
     let input = path.join("approval.json");
     std::fs::write(&input, json!({"store":path,"task":"task","revision":1,"approval":"one","expires_unix":expires,"request":request}).to_string()).unwrap();
     let run = |decision: &str| {
