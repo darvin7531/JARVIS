@@ -12,4 +12,5 @@ jobs:
         with:
           toolchain: 1.89.0
       - run: cargo test --locked --test cli closed_stdout_reports_failure_on_shutdown -- --exact --nocapture
+      - run: cargo test --locked --test closed_stdout_pipe
       - run: cargo test --locked --test cli
