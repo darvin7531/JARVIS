@@ -186,7 +186,6 @@ impl Provider for Ollama {
                                 break;
                             }
                         };
-                        emit(text);
                         if done {
                             match (
                                 value.get("prompt_eval_count").and_then(|v| v.as_u64()),
@@ -206,6 +205,7 @@ impl Provider for Ollama {
                                 }
                             }
                         }
+                        emit(text);
                     }
                     if let Some(e) = error {
                         break Err(e);
