@@ -43,11 +43,14 @@ pub fn route<'a>(
     capability: Capability,
     data: DataClass,
 ) -> Result<&'a ModelProfile<'a>, RouteError> {
-    if tier == Tier::T0 {
+    if tier == Tier::T0
+        || manual.is_some_and(|name| models.iter().filter(|model| model.name == name).count() != 1)
+    {
         return Err(RouteError::ModelUnavailable);
     }
-    let eligible =
-        |model: &&ModelProfile<'_>| manual.map_or(model.tier == tier, |name| model.name == name);
+    let eligible = |model: &&ModelProfile<'_>| {
+        model.tier != Tier::T0 && manual.map_or(model.tier == tier, |name| model.name == name)
+    };
     if !models.iter().any(|model| eligible(&model)) {
         return Err(RouteError::ModelUnavailable);
     }
