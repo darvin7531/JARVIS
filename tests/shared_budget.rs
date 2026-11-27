@@ -165,7 +165,7 @@ fn terminal_overusage_is_retained_for_settlement() {
         prompt: "x",
         max_tokens: 8,
         max_output_bytes: 64,
-        timeout: Duration::from_secs(5),
+        deadline: std::time::Instant::now() + Duration::from_secs(5),
     };
     let mut text = String::new();
     let result = Ollama {
@@ -174,7 +174,7 @@ fn terminal_overusage_is_retained_for_settlement() {
     }
     .generate_bounded(
         &req,
-        &AtomicBool::new(false),
+        &std::sync::Arc::new(AtomicBool::new(false)),
         &mut |s| text.push_str(s),
         Some(10),
     );

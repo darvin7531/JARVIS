@@ -4,7 +4,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc,
+        mpsc, Arc,
     },
     thread,
     time::{Duration, Instant},
@@ -31,7 +31,7 @@ pub struct Request<'a> {
     pub prompt: &'a str,
     pub max_tokens: u32,
     pub max_output_bytes: usize,
-    pub timeout: Duration,
+    pub deadline: Instant,
 }
 /// Emitted text is provisional until `generate` returns success with usage.
 /// Callbacks must return promptly: timeout and cancellation cannot interrupt them.
@@ -39,19 +39,25 @@ pub trait Provider {
     fn generate(
         &self,
         request: &Request<'_>,
-        cancelled: &AtomicBool,
+        cancelled: &Arc<AtomicBool>,
         emit: &mut dyn FnMut(&str),
     ) -> Result<Usage, Error>;
 }
-fn validate(r: &Request<'_>, cancelled: &AtomicBool) -> Result<(), Error> {
+fn check_deadline(r: &Request<'_>, cancelled: &AtomicBool) -> Result<(), Error> {
     if cancelled.load(Ordering::Relaxed) {
         return Err(Error::Cancelled);
     }
+    if Instant::now() >= r.deadline {
+        return Err(Error::Timeout);
+    }
+    Ok(())
+}
+fn validate(r: &Request<'_>, cancelled: &AtomicBool) -> Result<(), Error> {
+    check_deadline(r, cancelled)?;
     if r.model.is_empty()
         || r.prompt.len() > 1024 * 1024
         || r.max_tokens == 0
         || r.max_output_bytes == 0
-        || r.timeout.is_zero()
     {
         return Err(Error::InvalidRequest);
     }
@@ -69,13 +75,14 @@ impl Provider for MockProvider {
     fn generate(
         &self,
         r: &Request<'_>,
-        cancelled: &AtomicBool,
+        cancelled: &Arc<AtomicBool>,
         emit: &mut dyn FnMut(&str),
     ) -> Result<Usage, Error> {
         validate(r, cancelled)?;
         if self.text.len() > r.max_output_bytes {
             return Err(Error::Budget);
         }
+        check_deadline(r, cancelled)?;
         emit(&self.text);
         Ok(Usage {
             input_tokens: 1,
@@ -100,7 +107,7 @@ impl Provider for Ollama {
     fn generate(
         &self,
         r: &Request<'_>,
-        cancelled: &AtomicBool,
+        cancelled: &Arc<AtomicBool>,
         emit: &mut dyn FnMut(&str),
     ) -> Result<Usage, Error> {
         self.generate_bounded(r, cancelled, emit, None)
@@ -110,7 +117,7 @@ impl Ollama {
     pub fn generate_bounded(
         &self,
         r: &Request<'_>,
-        cancelled: &AtomicBool,
+        cancelled: &Arc<AtomicBool>,
         emit: &mut dyn FnMut(&str),
         max_input_tokens: Option<u32>,
     ) -> Result<Usage, Error> {
@@ -123,6 +130,7 @@ impl Ollama {
             payload["options"]["num_ctx"] = bound.into();
         }
         let payload = serde_json::to_vec(&payload).map_err(|_| Error::InvalidRequest)?;
+        check_deadline(r, cancelled)?;
         let mut child = ChildGuard(
             Command::new("curl")
                 .args([
@@ -144,15 +152,31 @@ impl Ollama {
                 .spawn()
                 .map_err(|_| Error::Transport)?,
         );
+        check_deadline(r, cancelled)?;
         let mut input = child.0.stdin.take().ok_or(Error::Transport)?;
+        let deadline = r.deadline;
+        let writer_cancelled = Arc::clone(cancelled);
         thread::spawn(move || {
-            let _ = input.write_all(&payload);
+            let mut remaining = payload.as_slice();
+            while !remaining.is_empty()
+                && !writer_cancelled.load(Ordering::Relaxed)
+                && Instant::now() < deadline
+            {
+                match input.write(remaining) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => remaining = &remaining[n..],
+                }
+            }
         });
         let mut output = child.0.stdout.take().ok_or(Error::Transport)?;
         let (tx, rx) = mpsc::sync_channel(2);
+        let reader_cancelled = Arc::clone(cancelled);
         thread::spawn(move || {
             let mut buf = [0u8; 4096];
             loop {
+                if reader_cancelled.load(Ordering::Relaxed) || Instant::now() >= deadline {
+                    break;
+                }
                 match output.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
@@ -167,20 +191,19 @@ impl Ollama {
                 }
             }
         });
-        let started = Instant::now();
         let mut line = Vec::new();
         let mut output_bytes = 0usize;
         let mut usage = None;
         let mut incomplete = false;
         let result = loop {
-            if cancelled.load(Ordering::Relaxed) {
-                break Err(Error::Cancelled);
-            }
-            if started.elapsed() >= r.timeout {
-                break Err(Error::Timeout);
+            if let Err(error) = check_deadline(r, cancelled) {
+                break Err(error);
             }
             match rx.recv_timeout(Duration::from_millis(25)) {
                 Ok(Ok(bytes)) => {
+                    if let Err(error) = check_deadline(r, cancelled) {
+                        break Err(error);
+                    }
                     let mut error = None;
                     for byte in bytes {
                         if usage.is_some() {
@@ -264,6 +287,10 @@ impl Ollama {
                                             .is_some_and(|max| u.input_tokens > u64::from(max))
                                 }))))
                         {
+                            if let Err(e) = check_deadline(r, cancelled) {
+                                error = Some(e);
+                                break;
+                            }
                             emit(text);
                         }
                     }
