@@ -370,6 +370,27 @@ fn approval_cannot_be_issued_for_missing_or_stale_task() {
 }
 
 #[test]
+fn expired_approval_is_not_issued() {
+    let path = std::env::temp_dir().join(format!("jarvis-issue-expired-{}", std::process::id()));
+    let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
+    create_task(&mut store);
+    assert!(store
+        .issue_tool_approval(
+            "expired",
+            "task",
+            1,
+            &request(),
+            SystemTime::now() - Duration::from_secs(2),
+        )
+        .is_err());
+    let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
+    let count: i64 = db
+        .query_row("SELECT count(*) FROM tool_approvals", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
 fn backup_does_not_revive_pending_approval() {
     let root = std::env::temp_dir().join(format!("jarvis-approval-backup-{}", std::process::id()));
     std::fs::create_dir(&root).unwrap();
