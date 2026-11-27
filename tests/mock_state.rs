@@ -52,6 +52,20 @@ fn approved_mock_write_persists_and_denials_do_not_mutate() {
         .unwrap();
     let mut no_approval = Broker::new(contract("write", "write", Scope::Write, "first"));
     assert_eq!(no_approval.call(&write), Err(BrokerError::Denied));
+    let mut mismatch = Broker::with_approval(
+        contract("write", "write", Scope::Write, "forged"),
+        store,
+        "write".into(),
+        "task".into(),
+        1,
+    );
+    assert_eq!(
+        mismatch.call(&request("write", "write", "forged")),
+        Err(BrokerError::Denied)
+    );
+    assert_eq!(mismatch.executions(), 0);
+    drop(mismatch);
+    let mut store = SqliteStore::open(&path).unwrap();
     let no_scope = contract("write", "write", Scope::Read, "first");
     let mut denied_resource = contract("write", "write", Scope::Write, "first");
     denied_resource.denied_resources.push("mock/item".into());
