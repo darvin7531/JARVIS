@@ -1,0 +1,185 @@
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::time::SystemTime;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    Read,
+    Write,
+}
+
+// Legacy scope check; it is not the broker's tool registry.
+pub fn permits(tool: &str, allowed: &[Scope]) -> bool {
+    match tool {
+        "read" | "inert" => allowed.contains(&Scope::Read),
+        "write" => allowed.contains(&Scope::Write),
+        _ => false,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DataClass {
+    Public,
+    Sensitive,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ToolRequest {
+    pub tool: String,
+    pub action: String,
+    pub resource: String,
+    pub data_class: DataClass,
+    pub arguments: Value,
+}
+
+// Constructed and installed by the trusted owner, never deserialized from a request.
+// Ownership is moved into the broker; there is no contract mutation API.
+pub struct TaskContract {
+    pub scopes: Vec<Scope>,
+    pub tool: String,
+    pub action: String,
+    pub resource: String,
+    pub denied_resources: Vec<String>,
+    pub data_class: DataClass,
+    pub permitted_text: String,
+    pub expires_at: SystemTime,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum BrokerError {
+    UnknownTool,
+    InvalidResource,
+    Denied,
+    InvalidArguments,
+    OutcomeUncertain,
+}
+
+const INERT_TEXT_MAX_BYTES: usize = 1024;
+
+/// Argument schema; maxUtf8Bytes counts UTF-8 bytes, not Unicode characters.
+pub fn tool_schema(name: &str) -> Option<Value> {
+    match name {
+        "inert" => Some(serde_json::json!({
+            "type": "object",
+            "required": ["text"],
+            "additionalProperties": false,
+            "properties": {"text": {"type": "string", "maxUtf8Bytes": INERT_TEXT_MAX_BYTES}}
+        })),
+        _ => None,
+    }
+}
+
+fn inert_text(arguments: &Value) -> Option<&str> {
+    let object = arguments.as_object()?;
+    if object.len() != 1 {
+        return None;
+    }
+    let text = object.get("text")?.as_str()?;
+    (text.len() <= INERT_TEXT_MAX_BYTES).then_some(text)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum RegisteredTool {
+    Inert { text: String },
+}
+
+pub fn validate_tool(name: &str, arguments: &Value) -> Result<RegisteredTool, BrokerError> {
+    match name {
+        "inert" => Ok(RegisteredTool::Inert {
+            text: inert_text(arguments)
+                .ok_or(BrokerError::InvalidArguments)?
+                .to_owned(),
+        }),
+        _ => Err(BrokerError::UnknownTool),
+    }
+}
+
+impl RegisteredTool {
+    fn execute(self) -> String {
+        match self {
+            Self::Inert { text } => text,
+        }
+    }
+}
+
+// The owner must keep broker construction outside the untrusted request path.
+// This in-process boundary does not authenticate callers or isolate processes.
+pub struct Broker {
+    contract: TaskContract,
+    approval: Option<(crate::storage::SqliteStore, String, String, i64)>,
+    executions: usize,
+}
+
+impl Broker {
+    pub fn new(contract: TaskContract) -> Self {
+        Self {
+            contract,
+            approval: None,
+            executions: 0,
+        }
+    }
+
+    // The owner installs the trusted task identity and selects an issued approval.
+    pub fn with_approval(
+        contract: TaskContract,
+        store: crate::storage::SqliteStore,
+        id: String,
+        task: String,
+        revision: i64,
+    ) -> Self {
+        Self {
+            contract,
+            approval: Some((store, id, task, revision)),
+            executions: 0,
+        }
+    }
+
+    pub fn executions(&self) -> usize {
+        self.executions
+    }
+
+    pub fn call(&mut self, request: &ToolRequest) -> Result<String, BrokerError> {
+        let tool = validate_tool(&request.tool, &request.arguments)?;
+        if request.resource.is_empty() || request.resource.len() > 128 {
+            return Err(BrokerError::InvalidResource);
+        }
+        let contract = &self.contract;
+        if SystemTime::now() >= contract.expires_at
+            || !contract.scopes.contains(&Scope::Read)
+            || request.tool != contract.tool
+            || request.action != "echo"
+            || request.action != contract.action
+            || request.resource != contract.resource
+            || contract.denied_resources.contains(&request.resource)
+            || request.data_class != contract.data_class
+        {
+            return Err(BrokerError::Denied);
+        }
+        let RegisteredTool::Inert { text } = &tool;
+        if text != &contract.permitted_text {
+            return Err(BrokerError::Denied);
+        }
+        let (store, id, task, revision) = self.approval.as_mut().ok_or(BrokerError::Denied)?;
+        if !store
+            .consume_tool_approval(id, task, *revision, request, contract.expires_at)
+            .unwrap_or(false)
+        {
+            return Err(BrokerError::Denied);
+        }
+        // A consumed approval remains pending on a failed freshness check; the
+        // owner must reconcile the durable intent before any further call.
+        if !store.tool_approval_is_fresh(id).unwrap_or(false)
+            || SystemTime::now() >= contract.expires_at
+        {
+            return Err(BrokerError::Denied);
+        }
+        self.executions += 1;
+        let result = tool.execute();
+        store
+            .record_tool_outcome(id, task, *revision)
+            .map_err(|_| BrokerError::OutcomeUncertain)?;
+        Ok(result)
+    }
+}

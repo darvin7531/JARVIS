@@ -19,3 +19,4 @@ pub mod inference;
 /// use jarvis::provider::{Ollama, Provider};
 /// ```
 pub mod storage;
+pub mod tool_policy;

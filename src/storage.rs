@@ -23,6 +23,15 @@ pub struct AuditEvent {
     pub occurred_at: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReconciliationOutcome {
+    Succeeded,
+    Failed,
+    NotExecuted,
+    Unknown,
+}
+
 #[derive(Debug)]
 pub enum StorageError {
     OperationFailed,
@@ -66,6 +75,15 @@ fn validate_schema(db: &Connection, version: i64) -> Result<(), StorageError> {
     }
     if version >= 7 {
         expected.execute_batch("ALTER TABLE inference_budget ADD COLUMN pending INTEGER NOT NULL DEFAULT 1 CHECK(pending IN (0, 1));")?;
+    }
+    if version >= 8 {
+        expected.execute_batch("CREATE TABLE tool_approvals (id TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL, revision INTEGER NOT NULL, request TEXT NOT NULL, expires INTEGER NOT NULL, consumed INTEGER NOT NULL DEFAULT 0 CHECK(consumed IN (0, 1)));")?;
+    }
+    if version >= 9 {
+        expected.execute_batch("CREATE TABLE tool_budget (id INTEGER PRIMARY KEY CHECK(id = 1), call_limit INTEGER NOT NULL CHECK(call_limit >= 0), used INTEGER NOT NULL DEFAULT 0 CHECK(used >= 0 AND used <= call_limit));")?;
+    }
+    if version >= 10 {
+        expected.execute_batch("CREATE TABLE tool_executions (approval_id TEXT PRIMARY KEY NOT NULL REFERENCES tool_approvals(id), pending INTEGER NOT NULL CHECK(pending IN (0, 1))); ")?;
     }
     fn definitions(db: &Connection) -> Result<Vec<(String, String)>, StorageError> {
         let mut query = db.prepare(
@@ -136,7 +154,7 @@ impl SqliteStore {
         db.execute_batch("PRAGMA foreign_keys = ON;")?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if !(0..=7).contains(&version) {
+        if !(0..=10).contains(&version) {
             return Err(StorageError::UnsupportedSchema);
         }
         if version > 0 {
@@ -183,8 +201,184 @@ impl SqliteStore {
         if version < 7 {
             tx.execute_batch("ALTER TABLE inference_budget ADD COLUMN pending INTEGER NOT NULL DEFAULT 1 CHECK(pending IN (0, 1)); PRAGMA user_version = 7;")?;
         }
+        if version < 8 {
+            tx.execute_batch("CREATE TABLE tool_approvals (id TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL, revision INTEGER NOT NULL, request TEXT NOT NULL, expires INTEGER NOT NULL, consumed INTEGER NOT NULL DEFAULT 0 CHECK(consumed IN (0, 1))); PRAGMA user_version = 8;")?;
+        }
+        if version < 9 {
+            tx.execute_batch("CREATE TABLE tool_budget (id INTEGER PRIMARY KEY CHECK(id = 1), call_limit INTEGER NOT NULL CHECK(call_limit >= 0), used INTEGER NOT NULL DEFAULT 0 CHECK(used >= 0 AND used <= call_limit)); PRAGMA user_version = 9;")?;
+        }
+        if version < 10 {
+            tx.execute_batch("CREATE TABLE tool_executions (approval_id TEXT PRIMARY KEY NOT NULL REFERENCES tool_approvals(id), pending INTEGER NOT NULL CHECK(pending IN (0, 1))); INSERT INTO tool_executions SELECT id, 1 FROM tool_approvals WHERE consumed = 1; PRAGMA user_version = 10;")?;
+        }
         tx.commit()?;
         Ok(Self { db })
+    }
+
+    // Trusted owner only: untrusted requests must never reach this method.
+    pub fn issue_tool_approval(
+        &mut self,
+        id: &str,
+        task: &str,
+        revision: i64,
+        request: &crate::tool_policy::ToolRequest,
+        expires: std::time::SystemTime,
+    ) -> Result<(), StorageError> {
+        let expires = i64::try_from(
+            expires
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| StorageError::OperationFailed)?
+                .as_secs(),
+        )
+        .map_err(|_| StorageError::OperationFailed)?;
+        if id.is_empty()
+            || task.is_empty()
+            || revision < 0
+            || request.tool != "inert"
+            || request.action != "echo"
+            || request.resource.is_empty()
+            || request.resource.len() > 128
+            || crate::tool_policy::validate_tool(&request.tool, &request.arguments).is_err()
+        {
+            return Err(StorageError::OperationFailed);
+        }
+        let request = serde_json::to_string(request).map_err(|_| StorageError::OperationFailed)?;
+        let changed = self.db.execute("INSERT INTO tool_approvals (id, task_id, revision, request, expires) SELECT ?1, id, version, ?4, ?5 FROM tasks WHERE id = ?2 AND version = ?3", params![id, task, revision, request, expires])?;
+        if changed != 1 {
+            return Err(StorageError::OperationFailed);
+        }
+        Ok(())
+    }
+
+    /// Trusted owner establishes a workspace-wide immutable call limit once.
+    pub fn initialize_tool_budget(&mut self, limit: u64) -> Result<(), StorageError> {
+        let limit = i64::try_from(limit).map_err(|_| StorageError::OperationFailed)?;
+        self.db.execute(
+            "INSERT INTO tool_budget (id, call_limit) VALUES (1, ?1)",
+            [limit],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn consume_tool_approval(
+        &mut self,
+        id: &str,
+        task: &str,
+        revision: i64,
+        request: &crate::tool_policy::ToolRequest,
+        contract_expires: std::time::SystemTime,
+    ) -> Result<bool, StorageError> {
+        let request = serde_json::to_string(request).map_err(|_| StorageError::OperationFailed)?;
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let now = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| StorageError::OperationFailed)?
+                .as_secs(),
+        )
+        .map_err(|_| StorageError::OperationFailed)?;
+        if std::time::SystemTime::now() >= contract_expires {
+            return Ok(false);
+        }
+        let changed = tx.execute("UPDATE tool_approvals SET consumed = 1 WHERE id = ?1 AND task_id = ?2 AND revision = ?3 AND request = ?4 AND expires > ?5 AND consumed = 0 AND EXISTS (SELECT 1 FROM tasks WHERE id = ?2 AND version = ?3)", params![id, task, revision, request, now])?;
+        if changed != 1 {
+            return Ok(false);
+        }
+        // A backup marker blocks admission until omitted work is reconciled.
+        let reserved = tx.execute(
+            "UPDATE tool_budget SET used = used + 1 WHERE id = 1 AND used < call_limit AND NOT EXISTS (SELECT 1 FROM inference_budget WHERE id = -1 AND pending = 1) AND NOT EXISTS (SELECT 1 FROM tool_executions WHERE pending = 1)",
+            [],
+        )?;
+        if reserved != 1 {
+            return Ok(false);
+        }
+        // ponytail: one in-flight tool call per workspace; use per-resource
+        // reconciliation before allowing concurrent executions.
+        tx.execute(
+            "INSERT INTO tool_executions (approval_id, pending) VALUES (?1, 1)",
+            [id],
+        )?;
+        let event =
+            serde_json::json!({"type": "tool_execution_intent", "approval_id": id}).to_string();
+        tx.execute(
+            "INSERT INTO events (task_id, event, revision, occurred_at) VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            params![task, event, revision],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    pub(crate) fn tool_approval_is_fresh(&self, id: &str) -> Result<bool, StorageError> {
+        let expires: i64 = self.db.query_row(
+            "SELECT expires FROM tool_approvals WHERE id = ?1 AND consumed = 1",
+            [id],
+            |row| row.get(0),
+        )?;
+        let now = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| StorageError::OperationFailed)?
+                .as_secs(),
+        )
+        .map_err(|_| StorageError::OperationFailed)?;
+        Ok(expires > now)
+    }
+
+    pub(crate) fn record_tool_outcome(
+        &mut self,
+        id: &str,
+        task: &str,
+        revision: i64,
+    ) -> Result<(), StorageError> {
+        let event = serde_json::json!({"type": "tool_execution_outcome", "approval_id": id, "outcome": "succeeded"}).to_string();
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if tx.execute(
+            "UPDATE tool_executions SET pending = 0 WHERE approval_id = ?1 AND pending = 1",
+            [id],
+        )? != 1
+        {
+            return Err(StorageError::OperationFailed);
+        }
+        tx.execute(
+            "INSERT INTO events (task_id, event, revision, occurred_at) VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            params![task, event, revision],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Trusted owner only: stop all clients, preserve a backup, and obtain
+    /// exclusive maintenance access before resolving without replay or refund.
+    pub fn reconcile_tool_execution(
+        &mut self,
+        id: &str,
+        outcome: ReconciliationOutcome,
+    ) -> Result<(), StorageError> {
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let (task, revision): (String, i64) = tx.query_row(
+            "SELECT a.task_id, a.revision FROM tool_approvals a JOIN tool_executions e ON e.approval_id = a.id WHERE a.id = ?1 AND a.consumed = 1 AND e.pending = 1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if tx.execute(
+            "UPDATE tool_executions SET pending = 0 WHERE approval_id = ?1 AND pending = 1",
+            [id],
+        )? != 1
+        {
+            return Err(StorageError::OperationFailed);
+        }
+        let event = serde_json::json!({"type": "tool_execution_reconciliation", "approval_id": id, "outcome": outcome}).to_string();
+        tx.execute(
+            "INSERT INTO events (task_id, event, revision, occurred_at) VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            params![task, event, revision],
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// Atomically reserve a conservative token allowance across all processes.
@@ -346,7 +540,7 @@ impl SqliteStore {
             .ok_or(StorageError::OperationFailed)?;
         let tx = self.db.transaction()?;
         let changed = tx.execute(
-            "UPDATE tasks SET version = ?1, title = ?2 WHERE id = ?3 AND version = ?4",
+            "UPDATE tasks SET version = ?1, title = ?2 WHERE id = ?3 AND version = ?4 AND NOT EXISTS (SELECT 1 FROM tool_executions e JOIN tool_approvals a ON a.id = e.approval_id WHERE e.pending = 1 AND a.task_id = ?3)",
             params![task.version, task.title, task.id, previous],
         )?;
         if changed != 1 {
@@ -441,7 +635,7 @@ impl SqliteStore {
                     }
                 }
                 // A snapshot cannot establish how much was spent after it was taken.
-                destination.execute("INSERT INTO inference_budget (id, tokens, pending) VALUES (-1, 0, 1) ON CONFLICT(id) DO UPDATE SET pending = 1", [])?;
+                destination.execute_batch("BEGIN IMMEDIATE; INSERT INTO inference_budget (id, tokens, pending) VALUES (-1, 0, 1) ON CONFLICT(id) DO UPDATE SET pending = 1; UPDATE tool_approvals SET consumed = 1 WHERE consumed = 0; COMMIT;")?;
             }
             std::fs::File::open(temporary.join("jarvis.sqlite3"))
                 .and_then(|file| file.sync_all())
@@ -568,6 +762,158 @@ impl TaskStore for SqliteStore {
 mod backup_tests {
     use super::*;
     use std::{sync::mpsc, time::Duration};
+
+    #[test]
+    fn broker_denies_approval_expired_while_waiting_for_lock() {
+        use crate::tool_policy::{
+            Broker, BrokerError, DataClass, Scope, TaskContract, ToolRequest,
+        };
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::{Instant, SystemTime, UNIX_EPOCH};
+        static BLOCKED: AtomicBool = AtomicBool::new(false);
+        let root = std::env::temp_dir().join(format!("jarvis-broker-lock-{}", std::process::id()));
+        let mut store = SqliteStore::create(&root).unwrap();
+        store
+            .create_task(
+                &Task {
+                    id: "task".into(),
+                    version: 1,
+                    title: "test".into(),
+                },
+                "created",
+                &[],
+            )
+            .unwrap();
+        store.initialize_tool_budget(1).unwrap();
+        let request: ToolRequest = serde_json::from_value(serde_json::json!({"tool":"inert", "action":"echo", "resource":"task/item", "data_class":"public", "arguments":{"text":"hello"}})).unwrap();
+        let expiry = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3;
+        store
+            .issue_tool_approval(
+                "one",
+                "task",
+                1,
+                &request,
+                UNIX_EPOCH + Duration::from_secs(expiry),
+            )
+            .unwrap();
+        let contract = TaskContract {
+            scopes: vec![Scope::Read],
+            tool: "inert".into(),
+            action: "echo".into(),
+            resource: "task/item".into(),
+            denied_resources: vec![],
+            data_class: DataClass::Public,
+            permitted_text: "hello".into(),
+            expires_at: SystemTime::now() + Duration::from_secs(60),
+        };
+        let lock = Connection::open(root.join("jarvis.sqlite3")).unwrap();
+        lock.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        store
+            .db
+            .busy_handler(Some(|_| {
+                BLOCKED.store(true, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(1));
+                true
+            }))
+            .unwrap();
+        let worker = std::thread::spawn(move || {
+            let mut broker = Broker::with_approval(contract, store, "one".into(), "task".into(), 1);
+            (broker.call(&request), broker.executions())
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !BLOCKED.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            BLOCKED.load(Ordering::SeqCst),
+            "broker never waited for lock"
+        );
+        assert!(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                < expiry,
+            "broker started too late"
+        );
+        while SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            < expiry
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        lock.execute_batch("COMMIT").unwrap();
+        assert_eq!(worker.join().unwrap(), (Err(BrokerError::Denied), 0));
+        let state: (i64, i64, i64) = lock.query_row("SELECT (SELECT consumed FROM tool_approvals WHERE id = 'one'), (SELECT used FROM tool_budget), (SELECT count(*) FROM tool_executions)", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!(state, (0, 0, 0));
+        drop(lock);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn approval_expiring_while_freshness_query_is_locked_is_denied() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::{Instant, SystemTime, UNIX_EPOCH};
+        static BLOCKED: AtomicBool = AtomicBool::new(false);
+        let root = std::env::temp_dir().join(format!("jarvis-fresh-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut store = SqliteStore::create(&root).unwrap();
+        let expiry = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3;
+        store.db.execute("INSERT INTO tool_approvals (id, task_id, revision, request, expires, consumed) VALUES ('one', 'task', 1, '{}', ?1, 1)", [expiry as i64]).unwrap();
+        let lock = Connection::open(root.join("jarvis.sqlite3")).unwrap();
+        lock.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        store
+            .db
+            .busy_handler(Some(|_| {
+                BLOCKED.store(true, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(1));
+                true
+            }))
+            .unwrap();
+        let worker = std::thread::spawn(move || store.tool_approval_is_fresh("one"));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !BLOCKED.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            BLOCKED.load(Ordering::SeqCst),
+            "query never waited for lock"
+        );
+        assert!(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                < expiry,
+            "query started too late"
+        );
+        while SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            < expiry
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        lock.execute_batch("COMMIT").unwrap();
+        assert!(
+            !worker.join().unwrap().unwrap(),
+            "expired approval was accepted"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn wal_backup_restores_complete_history_after_mid_backup_commits() {
