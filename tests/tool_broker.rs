@@ -467,6 +467,29 @@ fn failed_outcome_write_blocks_further_calls_after_reopen() {
     let mut broker = Broker::with_approval(contract(), store, "two".into(), "task".into(), 1);
     assert_eq!(broker.call(&request()), Err(BrokerError::Denied));
     assert_eq!(broker.executions(), 0);
+    drop(broker);
+    db.execute_batch("BEGIN IMMEDIATE;").unwrap();
+    assert_eq!(
+        db.execute(
+            "UPDATE tool_executions SET pending = 0 WHERE approval_id = 'one' AND pending = 1",
+            []
+        )
+        .unwrap(),
+        1
+    );
+    db.execute("INSERT INTO events (task_id, event, revision, occurred_at) VALUES ('task', ?1, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))", [json!({"type":"tool_execution_reconciliation", "approval_id":"one", "outcome":"unknown"}).to_string()]).unwrap();
+    db.execute_batch("COMMIT;").unwrap();
+    let store = jarvis::storage::SqliteStore::open(&path).unwrap();
+    let mut replay = Broker::with_approval(contract(), store, "one".into(), "task".into(), 1);
+    assert_eq!(replay.call(&request()), Err(BrokerError::Denied));
+    drop(replay);
+    let store = jarvis::storage::SqliteStore::open(&path).unwrap();
+    let mut next = Broker::with_approval(contract(), store, "two".into(), "task".into(), 1);
+    assert_eq!(next.call(&request()), Ok("hello".into()));
+    let used: i64 = db
+        .query_row("SELECT used FROM tool_budget", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(used, 2);
 }
 
 #[test]
