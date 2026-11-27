@@ -4,7 +4,7 @@ use serde::Deserialize;
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use std::{
     ffi::OsString,
-    fs::{File, OpenOptions},
+    fs::OpenOptions,
     io::Read,
     os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
     sync::{
