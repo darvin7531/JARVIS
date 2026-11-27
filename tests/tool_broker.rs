@@ -413,3 +413,10 @@ fn audit_write_failure_prevents_execution_and_preserves_approval() {
         .unwrap();
     assert_eq!(consumed, 0);
 }
+
+#[test]
+fn approved_call_without_trusted_budget_is_denied() {
+    let mut broker = approved(contract(), request());
+    assert_eq!(broker.call(&request()), Err(BrokerError::Denied));
+    assert_eq!(broker.executions(), 0);
+}
