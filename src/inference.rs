@@ -22,11 +22,18 @@ pub enum Tier {
     T3,
 }
 
-/// Deterministic opt-in task prefixes. Unknown tasks take the inexpensive tier.
-/// ponytail: prefix rules are deliberately simple; add rules when tasks require them.
+/// Rules are lexical hints, not a semantic complexity assessment.
+/// ponytail: a small keyword list misses synonyms; extend it from observed tasks.
 pub fn classify(prompt: &str) -> Tier {
     let prompt = prompt.trim_start();
-    if prompt.starts_with("complex:") {
+    let heavy = prompt
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|word| {
+            ["architecture", "incident", "critical"]
+                .iter()
+                .any(|hint| word.eq_ignore_ascii_case(hint))
+        });
+    if prompt.starts_with("complex:") || heavy {
         Tier::T3
     } else if prompt.starts_with("code:") {
         Tier::T2
