@@ -4,9 +4,9 @@ use serde::Deserialize;
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use std::{
     ffi::OsString,
-    fs::File,
+    fs::{File, OpenOptions},
     io::Read,
-    os::fd::AsRawFd,
+    os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -73,16 +73,6 @@ fn data(s: &str) -> Option<DataClass> {
     }
 }
 
-struct RestoreFlags(i32, i32);
-impl Drop for RestoreFlags {
-    fn drop(&mut self) {
-        // SAFETY: the descriptor remains owned by stdout throughout this scope.
-        unsafe {
-            libc::fcntl(self.0, libc::F_SETFL, self.1);
-        }
-    }
-}
-
 pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str> {
     let path = args.next().ok_or("invalid_arguments")?;
     let mut bytes = Vec::new();
@@ -143,13 +133,78 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
     if class == DataClass::Sensitive && !stdin_prompt {
         return Err("sensitive_requires_stdin");
     }
+    let cancelled = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(SIGINT, Arc::clone(&cancelled))
+        .map_err(|_| "signal_setup_failed")?;
+    signal_hook::flag::register(SIGTERM, Arc::clone(&cancelled))
+        .map_err(|_| "signal_setup_failed")?;
+    let started = Instant::now();
+    let timeout = Duration::from_secs(config.limits.timeout_seconds);
     let prompt = if stdin_prompt {
+        if class == DataClass::Sensitive && unsafe { libc::isatty(0) } == 1 {
+            return Err("sensitive_tty");
+        }
+        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+        if unsafe { libc::fstat(0, stat.as_mut_ptr()) } != 0 {
+            return Err("invalid_prompt");
+        }
+        let mode = unsafe { stat.assume_init() }.st_mode & libc::S_IFMT;
+        if mode == libc::S_IFSOCK {
+            return Err("invalid_prompt");
+        }
+        let input = if mode == libc::S_IFIFO {
+            Some(
+                OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_NONBLOCK)
+                    .open("/proc/self/fd/0")
+                    .map_err(|_| "invalid_prompt")?,
+            )
+        } else {
+            None
+        };
+        let fd = input.as_ref().map_or(0, AsRawFd::as_raw_fd);
         let mut bytes = Vec::new();
-        std::io::stdin()
-            .lock()
-            .take(1024 * 1024 + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|_| "invalid_prompt")?;
+        let mut buf = [0u8; 8192];
+        loop {
+            if cancelled.load(Ordering::Relaxed) {
+                return Err("cancelled");
+            }
+            if started.elapsed() >= timeout {
+                return Err("timeout");
+            }
+            let mut pollfd = libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let ready = unsafe { libc::poll(&mut pollfd, 1, 50) };
+            if ready < 0 {
+                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err("invalid_prompt");
+            }
+            if ready == 0 {
+                continue;
+            }
+            let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
+            if n == 0 {
+                break;
+            }
+            if n < 0 {
+                let kind = std::io::Error::last_os_error().kind();
+                if kind == std::io::ErrorKind::Interrupted || kind == std::io::ErrorKind::WouldBlock
+                {
+                    continue;
+                }
+                return Err("invalid_prompt");
+            }
+            bytes.extend_from_slice(&buf[..n as usize]);
+            if bytes.len() > 1024 * 1024 {
+                return Err("invalid_prompt");
+            }
+        }
         if bytes.len() > 1024 * 1024 {
             return Err("invalid_prompt");
         }
@@ -208,27 +263,33 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
         .iter()
         .position(|p| std::ptr::eq(p, selected))
         .ok_or("invalid_config")?;
-    let cancelled = Arc::new(AtomicBool::new(false));
-    signal_hook::flag::register(SIGINT, Arc::clone(&cancelled))
-        .map_err(|_| "signal_setup_failed")?;
-    signal_hook::flag::register(SIGTERM, Arc::clone(&cancelled))
-        .map_err(|_| "signal_setup_failed")?;
     let req = Request {
         model: selected.name,
         prompt: &prompt,
         max_tokens: config.limits.max_tokens,
         max_output_bytes: config.limits.max_output_bytes,
-        timeout: Duration::from_secs(config.limits.timeout_seconds),
+        timeout: timeout.checked_sub(started.elapsed()).ok_or("timeout")?,
     };
-    let stdout = std::io::stdout();
-    let fd = stdout.as_raw_fd();
-    // SAFETY: fcntl operates on the live stdout descriptor and integer flags.
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe { libc::fstat(1, stat.as_mut_ptr()) } != 0 {
         return Err("output_failed");
     }
-    let _restore = RestoreFlags(fd, flags);
-    let started = Instant::now();
+    let mode = unsafe { stat.assume_init() }.st_mode & libc::S_IFMT;
+    if mode == libc::S_IFSOCK {
+        return Err("output_failed");
+    }
+    let output = if mode == libc::S_IFIFO {
+        Some(
+            OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open("/proc/self/fd/1")
+                .map_err(|_| "output_failed")?,
+        )
+    } else {
+        None
+    };
+    let fd = output.as_ref().map_or(1, AsRawFd::as_raw_fd);
     let mut failure = None;
     let usage = Ollama {
         port: config.models[index].port,
@@ -239,7 +300,7 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
             if cancelled.load(Ordering::Relaxed) {
                 break;
             }
-            if started.elapsed() >= req.timeout {
+            if started.elapsed() >= timeout {
                 failure = Some("timeout");
                 cancelled.store(true, Ordering::Relaxed);
                 break;
