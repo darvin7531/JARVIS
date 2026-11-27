@@ -820,7 +820,7 @@ fn closed_runtime_denies_unused_approvals_without_charging() {
     assert!(store.agent_step("task", 1, 2, 2).unwrap());
     write.arguments = json!({"text": "hello"});
     let mut broker = Broker::with_approval(
-        write_contract.clone(),
+        write_contract,
         store,
         "used".into(),
         "task".into(),
@@ -840,6 +840,10 @@ fn closed_runtime_denies_unused_approvals_without_charging() {
     drop(store);
     let store = jarvis::storage::SqliteStore::open(&path).unwrap();
     write.arguments = json!({"text": "changed"});
+    let mut write_contract = contract();
+    write_contract.tool = "write".into();
+    write_contract.action = "write".into();
+    write_contract.scopes = vec![Scope::Write];
     write_contract.permitted_text = "changed".into();
     let mut broker = Broker::with_approval(write_contract, store, "unused".into(), "task".into(), 1);
     assert_eq!(broker.call(&write), Err(BrokerError::Denied));
