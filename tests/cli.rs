@@ -60,7 +60,7 @@ fn event(receiver: &mpsc::Receiver<String>, name: &str) {
 
 #[test]
 fn closed_stdout_reports_failure_on_shutdown() {
-    use std::{net::Shutdown, os::unix::net::UnixStream};
+    use std::{net::Shutdown, os::fd::OwnedFd, os::unix::net::UnixStream};
 
     let (reader, writer) = UnixStream::pair().unwrap();
     // A concurrent fork can retain a duplicate; shutdown closes all copies' read side.
@@ -68,7 +68,7 @@ fn closed_stdout_reports_failure_on_shutdown() {
     let mut child = Process(
         Command::new(env!("CARGO_BIN_EXE_jarvis"))
             .stdin(Stdio::piped())
-            .stdout(Stdio::from(writer))
+            .stdout(Stdio::from(OwnedFd::from(writer)))
             .stderr(Stdio::piped())
             .spawn()
             .unwrap(),
