@@ -236,6 +236,9 @@ impl SqliteStore {
                 .as_secs(),
         )
         .map_err(|_| StorageError::OperationFailed)?;
+        if std::time::SystemTime::now() >= contract_expires {
+            return Ok(false);
+        }
         let changed = tx.execute("UPDATE tool_approvals SET consumed = 1 WHERE id = ?1 AND task_id = ?2 AND revision = ?3 AND request = ?4 AND expires > ?5 AND consumed = 0", params![id, task, revision, request, now])?;
         tx.commit()?;
         Ok(changed == 1)
