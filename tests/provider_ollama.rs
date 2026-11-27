@@ -258,3 +258,14 @@ fn length_finish_is_incomplete_and_preserves_usage() {
         "{debug}"
     );
 }
+
+#[test]
+fn terminal_finish_reason_must_be_recognized() {
+    for reason in ["", ",\"done_reason\":null", ",\"done_reason\":42", ",\"done_reason\":\"unknown\""] {
+        let body = format!("{{\"response\":\"last\",\"done\":true{reason},\"prompt_eval_count\":2,\"eval_count\":3}}\n");
+        let port = serve(Box::leak(body.into_boxed_str()), Duration::ZERO);
+        let mut text = String::new();
+        assert_eq!(Ollama { port }.generate(&request(), &AtomicBool::new(false), &mut |s| text.push_str(s)), Err(Error::InvalidStream));
+        assert!(text.is_empty());
+    }
+}
