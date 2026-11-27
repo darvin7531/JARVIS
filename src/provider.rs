@@ -1,7 +1,7 @@
 //! Streaming local Ollama provider. Prompts and server errors are never logged.
 use std::{
     io::{Read, Write},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc,
@@ -32,6 +32,8 @@ pub struct Request<'a> {
     pub max_output_bytes: usize,
     pub timeout: Duration,
 }
+/// Emitted text is provisional until `generate` returns success with usage.
+/// Callbacks must return promptly: timeout and cancellation cannot interrupt them.
 pub trait Provider {
     fn generate(
         &self,
@@ -80,6 +82,14 @@ impl Provider for MockProvider {
         })
     }
 }
+struct ChildGuard(Child);
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 /// Uses curl for HTTP framing. Only a loopback port is configurable; no secrets or remote hosts.
 pub struct Ollama {
     pub port: u16,
@@ -93,30 +103,32 @@ impl Provider for Ollama {
     ) -> Result<Usage, Error> {
         validate(r, cancelled)?;
         let payload = serde_json::to_vec(&serde_json::json!({"model":r.model,"prompt":r.prompt,"stream":true,"options":{"num_predict":r.max_tokens}})).map_err(|_| Error::InvalidRequest)?;
-        let mut child = Command::new("curl")
-            .args([
-                "--disable",
-                "--silent",
-                "--fail",
-                "--no-buffer",
-                "--noproxy",
-                "*",
-                "--header",
-                "Content-Type: application/json",
-                "--data-binary",
-                "@-",
-                &format!("http://127.0.0.1:{}/api/generate", self.port),
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|_| Error::Transport)?;
-        let mut input = child.stdin.take().ok_or(Error::Transport)?;
+        let mut child = ChildGuard(
+            Command::new("curl")
+                .args([
+                    "--disable",
+                    "--silent",
+                    "--fail",
+                    "--no-buffer",
+                    "--noproxy",
+                    "*",
+                    "--header",
+                    "Content-Type: application/json",
+                    "--data-binary",
+                    "@-",
+                    &format!("http://127.0.0.1:{}/api/generate", self.port),
+                ])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|_| Error::Transport)?,
+        );
+        let mut input = child.0.stdin.take().ok_or(Error::Transport)?;
         thread::spawn(move || {
             let _ = input.write_all(&payload);
         });
-        let mut output = child.stdout.take().ok_or(Error::Transport)?;
+        let mut output = child.0.stdout.take().ok_or(Error::Transport)?;
         let (tx, rx) = mpsc::sync_channel(2);
         thread::spawn(move || {
             let mut buf = [0u8; 4096];
@@ -214,7 +226,7 @@ impl Provider for Ollama {
                 Ok(Err(())) => break Err(Error::Transport),
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    let status = child.wait().map_err(|_| Error::Transport)?;
+                    let status = child.0.wait().map_err(|_| Error::Transport)?;
                     break if !status.success() {
                         Err(Error::Transport)
                     } else if !line.is_empty() {
@@ -225,10 +237,6 @@ impl Provider for Ollama {
                 }
             }
         };
-        if result.is_err() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
         result
     }
 }
