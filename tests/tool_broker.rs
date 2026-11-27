@@ -426,7 +426,9 @@ fn audit_write_failure_prevents_execution_and_preserves_approval() {
         )
         .unwrap();
     assert_eq!(consumed, 0);
-    let used: i64 = db.query_row("SELECT used FROM tool_budget", [], |r| r.get(0)).unwrap();
+    let used: i64 = db
+        .query_row("SELECT used FROM tool_budget", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(used, 0);
 }
 
@@ -446,25 +448,53 @@ fn budget_is_shared_durable_and_atomic_with_approval_and_audit() {
     store.initialize_tool_budget(1).unwrap();
     assert!(store.initialize_tool_budget(100).is_err());
     for id in ["one", "two"] {
-        store.issue_tool_approval(id, "task", 1, &request(), SystemTime::now() + Duration::from_secs(60)).unwrap();
+        store
+            .issue_tool_approval(
+                id,
+                "task",
+                1,
+                &request(),
+                SystemTime::now() + Duration::from_secs(60),
+            )
+            .unwrap();
     }
     drop(store);
-    let stores: Vec<_> = (0..2).map(|_| jarvis::storage::SqliteStore::open(&path).unwrap()).collect();
+    let stores: Vec<_> = (0..2)
+        .map(|_| jarvis::storage::SqliteStore::open(&path).unwrap())
+        .collect();
     let barrier = Arc::new(Barrier::new(2));
-    let threads: Vec<_> = stores.into_iter().zip(["one", "two"]).map(|(store, id)| {
-        let barrier = barrier.clone();
-        std::thread::spawn(move || {
-            let mut broker = Broker::with_approval(contract(), store, id.into(), "task".into(), 1);
-            barrier.wait();
-            broker.call(&request()).is_ok()
+    let threads: Vec<_> = stores
+        .into_iter()
+        .zip(["one", "two"])
+        .map(|(store, id)| {
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                let mut broker =
+                    Broker::with_approval(contract(), store, id.into(), "task".into(), 1);
+                barrier.wait();
+                broker.call(&request()).is_ok()
+            })
         })
-    }).collect();
-    assert_eq!(threads.into_iter().map(|t| t.join().unwrap()).filter(|ok| *ok).count(), 1);
+        .collect();
+    assert_eq!(
+        threads
+            .into_iter()
+            .map(|t| t.join().unwrap())
+            .filter(|ok| *ok)
+            .count(),
+        1
+    );
     let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
     let (used, consumed, intents): (i64, i64, i64) = db.query_row(
         "SELECT (SELECT used FROM tool_budget), (SELECT sum(consumed) FROM tool_approvals), (SELECT count(*) FROM events WHERE event LIKE '%tool_execution_intent%')", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
     assert_eq!((used, consumed, intents), (1, 1, 1));
-    let loser: String = db.query_row("SELECT id FROM tool_approvals WHERE consumed = 0", [], |r| r.get(0)).unwrap();
+    let loser: String = db
+        .query_row(
+            "SELECT id FROM tool_approvals WHERE consumed = 0",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     let store = jarvis::storage::SqliteStore::open(&path).unwrap();
     let mut broker = Broker::with_approval(contract(), store, loser, "task".into(), 1);
     assert_eq!(broker.call(&request()), Err(BrokerError::Denied));
