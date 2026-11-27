@@ -387,7 +387,7 @@ fn stalled_version_check_obeys_deadline_and_cancellation() {
                 }
             });
             assert_eq!(
-                Ollama { port }.generate(&r, &flag, &mut |_| {}),
+                Ollama { port }.generate(&r, flag, &mut |_| {}),
                 Err(if cancel {
                     Error::Cancelled
                 } else {
