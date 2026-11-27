@@ -119,6 +119,9 @@ fn real_ollama_rejects_oversized_prompt() {
         .unwrap();
     assert!(!result.status.success());
     assert!(result.stdout.is_empty());
-    assert_eq!(result.stderr, b"{\"usage\":null}\n{\"error\":\"inference_failed\"}\n");
+    assert_eq!(
+        result.stderr,
+        b"{\"usage\":null}\n{\"error\":\"inference_failed\"}\n"
+    );
     fs::remove_dir_all(root).unwrap();
 }
