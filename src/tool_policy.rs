@@ -53,6 +53,7 @@ pub enum BrokerError {
     InvalidResource,
     Denied,
     InvalidArguments,
+    OutcomeUncertain,
 }
 
 pub(crate) fn inert_text(arguments: &Value) -> Option<&str> {
@@ -131,6 +132,9 @@ impl Broker {
             return Err(BrokerError::Denied);
         }
         self.executions += 1;
-        Ok(text.to_owned())
+        let result = text.to_owned();
+        store.record_tool_outcome(id, task, *revision)
+            .map_err(|_| BrokerError::OutcomeUncertain)?;
+        Ok(result)
     }
 }

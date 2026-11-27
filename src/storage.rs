@@ -288,6 +288,20 @@ impl SqliteStore {
         Ok(true)
     }
 
+    pub(crate) fn record_tool_outcome(
+        &mut self,
+        id: &str,
+        task: &str,
+        revision: i64,
+    ) -> Result<(), StorageError> {
+        let event = serde_json::json!({"type": "tool_execution_outcome", "approval_id": id, "outcome": "succeeded"}).to_string();
+        self.db.execute(
+            "INSERT INTO events (task_id, event, revision, occurred_at) VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            params![task, event, revision],
+        )?;
+        Ok(())
+    }
+
     /// Atomically reserve a conservative token allowance across all processes.
     pub fn reserve_tokens(&mut self, limit: u64, amount: u64) -> Result<Option<i64>, StorageError> {
         let limit = i64::try_from(limit).map_err(|_| StorageError::OperationFailed)?;
