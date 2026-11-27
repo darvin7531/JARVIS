@@ -122,7 +122,10 @@ pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'stat
                     return Err(());
                 }
                 serde_json::from_value::<Proposal>(value.clone())
-                    .or_else(|_| serde_json::from_value::<ToolRequest>(value).map(|request| Proposal::Tool { request }))
+                    .or_else(|_| {
+                        serde_json::from_value::<ToolRequest>(value)
+                            .map(|request| Proposal::Tool { request })
+                    })
                     .map_err(|_| ())
             });
         match parsed {
