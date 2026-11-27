@@ -818,5 +818,18 @@ fn restored_backup_blocks_budget_even_without_pending_reservations() {
     store.backup(&root.join("snapshot")).unwrap();
     let mut restored = SqliteStore::open(&root.join("snapshot")).unwrap();
     assert!(restored.reserve_tokens(100, 1).unwrap().is_none());
+    drop(restored);
+    // Operator reconciliation preserves the snapshot charge and adds omitted usage.
+    let db = rusqlite::Connection::open(root.join("snapshot/jarvis.sqlite3")).unwrap();
+    db.execute(
+        "UPDATE inference_budget SET tokens = 20, pending = 0 WHERE id = -1",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    let mut restored = SqliteStore::open(&root.join("snapshot")).unwrap();
+    assert!(restored.reserve_tokens(100, 76).unwrap().is_none());
+    assert!(restored.reserve_tokens(100, 75).unwrap().is_some());
+    drop(restored);
     std::fs::remove_dir_all(root).unwrap();
 }
