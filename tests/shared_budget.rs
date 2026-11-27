@@ -1,6 +1,23 @@
 use std::{fs, process::Command};
 
 #[test]
+fn missing_budget_rejects_before_connecting() {
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let path = std::env::temp_dir().join(format!("jarvis-no-budget-{}.json", std::process::id()));
+    fs::write(&path, serde_json::json!({
+        "models": [{"name":"model","tier":"t1","capabilities":["text"],"allowed_data":["public"],"port":listener.local_addr().unwrap().port()}],
+        "limits": {"timeout_seconds":1}
+    }).to_string()).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_jarvis"))
+        .args(["chat", "--config"]).arg(&path).arg("hello").output().unwrap();
+    fs::remove_file(path).unwrap();
+    assert_eq!(output.stderr, b"{\"error\":\"invalid_config\"}\n");
+    assert!(listener.accept().is_err(), "connected without a budget");
+}
+
+#[test]
 fn exhausted_shared_budget_rejects_before_connecting() {
     let root = std::env::temp_dir().join(format!("jarvis-budget-red-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
