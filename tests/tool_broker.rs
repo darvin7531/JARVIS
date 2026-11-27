@@ -128,3 +128,11 @@ fn approval_is_exact_and_single_use() {
     assert_eq!(broker.call(&request()), Err(BrokerError::Denied));
     assert_eq!(broker.executions(), 1);
 }
+
+#[test]
+fn approval_cannot_be_replayed_after_broker_recreation() {
+    let mut first = Broker::with_approval(contract(), request());
+    assert_eq!(first.call(&request()), Ok("hello".into()));
+    let mut reopened = Broker::with_approval(contract(), request());
+    assert_eq!(reopened.call(&request()), Err(BrokerError::Denied));
+}
