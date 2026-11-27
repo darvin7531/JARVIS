@@ -199,7 +199,9 @@ pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'stat
     if cancelled.load(Ordering::Relaxed) {
         return Err("cancelled");
     }
-    let observed = broker.call_cancellable(&read, &cancelled).map_err(|_| "agent_verify")?;
+    let observed = broker
+        .call_cancellable(&read, &cancelled)
+        .map_err(|_| "agent_verify")?;
     drop(broker);
     let mut store = SqliteStore::open(&owner.store).map_err(|_| "agent_storage")?;
     let status = if observed == owner.expected {
