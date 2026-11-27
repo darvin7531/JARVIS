@@ -174,3 +174,18 @@ fn sigterm_exits_with_full_stdout_pipe() {
     assert!(Command::new("/bin/kill").args(["-TERM", &child.0.id().to_string()]).status().unwrap().success());
     assert!(wait(&mut child).success());
 }
+
+#[cfg(unix)]
+#[test]
+fn chat_fifo_config_is_rejected_without_waiting_for_writer() {
+    let path = std::env::temp_dir().join(format!("jarvis-chat-fifo-{}", std::process::id()));
+    assert!(Command::new("mkfifo").arg(&path).status().unwrap().success());
+    let mut child = Process(Command::new(env!("CARGO_BIN_EXE_jarvis"))
+        .arg("chat").arg("--config").arg(&path).arg("hello")
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap());
+    assert!(!wait(&mut child).success());
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(&mut child.0.stderr.take().unwrap(), &mut stderr).unwrap();
+    assert_eq!(stderr, "{\"error\":\"invalid_config\"}\n");
+    std::fs::remove_file(path).unwrap();
+}
