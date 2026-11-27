@@ -37,6 +37,18 @@ impl Error {
 
 fn run() -> Result<(), Error> {
     let mut args = env::args_os().skip(1);
+    if args.clone().next().is_some_and(|arg| arg == "chat") {
+        args.next();
+        if args.next().is_none_or(|arg| arg != "--mock") {
+            return Err(Error::InvalidArguments);
+        }
+        let prompt = args.next().ok_or(Error::InvalidArguments)?;
+        if args.next().is_some() {
+            return Err(Error::InvalidArguments);
+        }
+        println!("{}", prompt.to_string_lossy());
+        return Ok(());
+    }
     let _config: Config = match args.next() {
         None => Config::default(),
         Some(flag) if flag == "--config" => {
