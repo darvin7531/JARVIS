@@ -77,10 +77,10 @@ fn real_ollama_budgeted_cli() {
     let output = usage["output_tokens"].as_u64().unwrap();
     assert!(input > 0 && output > 0 && output <= 128);
     let db = rusqlite::Connection::open(root.join("jarvis.sqlite3")).unwrap();
-    let tokens: u64 = db
+    let tokens: i64 = db
         .query_row("SELECT sum(tokens) FROM inference_budget", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(tokens, input + output);
+    assert_eq!(u64::try_from(tokens).unwrap(), input + output);
     drop(db);
     fs::remove_dir_all(root).unwrap();
 }
