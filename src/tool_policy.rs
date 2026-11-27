@@ -56,6 +56,10 @@ pub enum BrokerError {
     OutcomeUncertain,
 }
 
+pub fn tool_schema(_name: &str) -> Option<Value> {
+    None
+}
+
 fn inert_text(arguments: &Value) -> Option<&str> {
     let object = arguments.as_object()?;
     if object.len() != 1 {
