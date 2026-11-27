@@ -764,6 +764,100 @@ mod backup_tests {
     use std::{sync::mpsc, time::Duration};
 
     #[test]
+    fn broker_denies_approval_expired_while_waiting_for_lock() {
+        use crate::tool_policy::{
+            Broker, BrokerError, DataClass, Scope, TaskContract, ToolRequest,
+        };
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::{Instant, SystemTime, UNIX_EPOCH};
+        static BLOCKED: AtomicBool = AtomicBool::new(false);
+        let root = std::env::temp_dir().join(format!("jarvis-broker-lock-{}", std::process::id()));
+        let mut store = SqliteStore::create(&root).unwrap();
+        store
+            .create_task(
+                &Task {
+                    id: "task".into(),
+                    version: 1,
+                    title: "test".into(),
+                },
+                "created",
+                &[],
+            )
+            .unwrap();
+        store.initialize_tool_budget(1).unwrap();
+        let request: ToolRequest = serde_json::from_value(serde_json::json!({"tool":"inert", "action":"echo", "resource":"task/item", "data_class":"public", "arguments":{"text":"hello"}})).unwrap();
+        let expiry = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3;
+        store
+            .issue_tool_approval(
+                "one",
+                "task",
+                1,
+                &request,
+                UNIX_EPOCH + Duration::from_secs(expiry),
+            )
+            .unwrap();
+        let contract = TaskContract {
+            scopes: vec![Scope::Read],
+            tool: "inert".into(),
+            action: "echo".into(),
+            resource: "task/item".into(),
+            denied_resources: vec![],
+            data_class: DataClass::Public,
+            permitted_text: "hello".into(),
+            expires_at: SystemTime::now() + Duration::from_secs(60),
+        };
+        let lock = Connection::open(root.join("jarvis.sqlite3")).unwrap();
+        lock.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        store
+            .db
+            .busy_handler(Some(|_| {
+                BLOCKED.store(true, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(1));
+                true
+            }))
+            .unwrap();
+        let worker = std::thread::spawn(move || {
+            let mut broker = Broker::with_approval(contract, store, "one".into(), "task".into(), 1);
+            (broker.call(&request), broker.executions())
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !BLOCKED.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            BLOCKED.load(Ordering::SeqCst),
+            "broker never waited for lock"
+        );
+        assert!(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                < expiry,
+            "broker started too late"
+        );
+        while SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            < expiry
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        lock.execute_batch("COMMIT").unwrap();
+        assert_eq!(worker.join().unwrap(), (Err(BrokerError::Denied), 0));
+        let state: (i64, i64, i64) = lock.query_row("SELECT (SELECT consumed FROM tool_approvals WHERE id = 'one'), (SELECT used FROM tool_budget), (SELECT count(*) FROM tool_executions)", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!(state, (0, 0, 0));
+        drop(lock);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn approval_expiring_while_freshness_query_is_locked_is_denied() {
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::time::{Instant, SystemTime, UNIX_EPOCH};
