@@ -384,7 +384,29 @@ fn sensitive_terminal_input_is_rejected() {
 #[test]
 fn stdout_pipe_without_reader_fails() {
     use std::os::fd::FromRawFd;
-    let path = config(1, 2, "no-reader");
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let path = config(listener.local_addr().unwrap().port(), 2, "no-reader");
+    let server = thread::spawn(move || {
+        listener.set_nonblocking(true).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            match listener.accept() {
+                Ok((mut socket, _)) => {
+                    let mut buf = [0; 4096];
+                    let _ = socket.read(&mut buf);
+                    let _ = socket.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"response\":\"x\",\"done\":true,\"prompt_eval_count\":1,\"eval_count\":1}\n");
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => break,
+            }
+        }
+    });
     let mut fds = [0; 2];
     assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
     unsafe {
@@ -403,5 +425,6 @@ fn stdout_pipe_without_reader_fails() {
         "{:?}",
         output
     );
+    server.join().unwrap();
     fs::remove_file(path).unwrap();
 }
