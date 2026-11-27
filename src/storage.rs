@@ -301,6 +301,11 @@ impl SqliteStore {
     }
 
     pub(crate) fn tool_approval_is_fresh(&self, id: &str) -> Result<bool, StorageError> {
+        let expires: i64 = self.db.query_row(
+            "SELECT expires FROM tool_approvals WHERE id = ?1 AND consumed = 1",
+            [id],
+            |row| row.get(0),
+        )?;
         let now = i64::try_from(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -308,11 +313,7 @@ impl SqliteStore {
                 .as_secs(),
         )
         .map_err(|_| StorageError::OperationFailed)?;
-        Ok(self.db.query_row(
-            "SELECT expires > ?2 FROM tool_approvals WHERE id = ?1 AND consumed = 1",
-            params![id, now],
-            |row| row.get(0),
-        )?)
+        Ok(expires > now)
     }
 
     pub(crate) fn record_tool_outcome(
@@ -756,27 +757,53 @@ mod backup_tests {
         let root = std::env::temp_dir().join(format!("jarvis-fresh-lock-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let mut store = SqliteStore::create(&root).unwrap();
-        let expiry = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + 3;
+        let expiry = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3;
         store.db.execute("INSERT INTO tool_approvals (id, task_id, revision, request, expires, consumed) VALUES ('one', 'task', 1, '{}', ?1, 1)", [expiry as i64]).unwrap();
         let lock = Connection::open(root.join("jarvis.sqlite3")).unwrap();
         lock.execute_batch("BEGIN EXCLUSIVE").unwrap();
-        store.db.busy_handler(Some(|_| {
-            BLOCKED.store(true, Ordering::SeqCst);
-            std::thread::sleep(Duration::from_millis(1));
-            true
-        })).unwrap();
+        store
+            .db
+            .busy_handler(Some(|_| {
+                BLOCKED.store(true, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(1));
+                true
+            }))
+            .unwrap();
         let worker = std::thread::spawn(move || store.tool_approval_is_fresh("one"));
         let deadline = Instant::now() + Duration::from_secs(10);
         while !BLOCKED.load(Ordering::SeqCst) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(1));
         }
-        assert!(BLOCKED.load(Ordering::SeqCst), "query never waited for lock");
-        assert!(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() < expiry, "query started too late");
-        while SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() < expiry && Instant::now() < deadline {
+        assert!(
+            BLOCKED.load(Ordering::SeqCst),
+            "query never waited for lock"
+        );
+        assert!(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                < expiry,
+            "query started too late"
+        );
+        while SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            < expiry
+            && Instant::now() < deadline
+        {
             std::thread::sleep(Duration::from_millis(1));
         }
         lock.execute_batch("COMMIT").unwrap();
-        assert!(!worker.join().unwrap().unwrap(), "expired approval was accepted");
+        assert!(
+            !worker.join().unwrap().unwrap(),
+            "expired approval was accepted"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
