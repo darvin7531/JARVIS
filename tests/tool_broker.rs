@@ -526,17 +526,20 @@ fn failed_outcome_write_blocks_further_calls_after_reopen() {
     assert_eq!(broker.call(&request()), Err(BrokerError::Denied));
     assert_eq!(broker.executions(), 0);
     drop(broker);
-    db.execute_batch("BEGIN IMMEDIATE;").unwrap();
-    assert_eq!(
-        db.execute(
-            "UPDATE tool_executions SET pending = 0 WHERE approval_id = 'one' AND pending = 1",
-            []
-        )
-        .unwrap(),
-        1
-    );
-    db.execute("INSERT INTO events (task_id, event, revision, occurred_at) VALUES ('task', ?1, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))", [json!({"type":"tool_execution_reconciliation", "approval_id":"one", "outcome":"unknown"}).to_string()]).unwrap();
-    db.execute_batch("COMMIT;").unwrap();
+    let mut store = jarvis::storage::SqliteStore::open(&path).unwrap();
+    db.execute_batch("CREATE TRIGGER reject_reconciliation BEFORE INSERT ON events WHEN NEW.event LIKE '%tool_execution_reconciliation%' BEGIN SELECT RAISE(ABORT, 'failed'); END;").unwrap();
+    assert!(store.reconcile_tool_execution("one").is_err());
+    let pending: i64 = db.query_row("SELECT pending FROM tool_executions WHERE approval_id = 'one'", [], |r| r.get(0)).unwrap();
+    assert_eq!(pending, 1);
+    db.execute_batch("DROP TRIGGER reject_reconciliation;").unwrap();
+    store.reconcile_tool_execution("one").unwrap();
+    assert!(store.reconcile_tool_execution("one").is_err());
+    assert!(store.reconcile_tool_execution("missing").is_err());
+    let event: String = db.query_row("SELECT event FROM events WHERE event LIKE '%tool_execution_reconciliation%' AND task_id = 'task' AND revision = 1", [], |r| r.get(0)).unwrap();
+    let event: Value = serde_json::from_str(&event).unwrap();
+    assert_eq!(event["approval_id"], "one");
+    assert_eq!(event["outcome"], "unknown");
+    drop(store);
     let store = jarvis::storage::SqliteStore::open(&path).unwrap();
     let mut replay = Broker::with_approval(contract(), store, "one".into(), "task".into(), 1);
     assert_eq!(replay.call(&request()), Err(BrokerError::Denied));

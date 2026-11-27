@@ -340,6 +340,11 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Trusted owner resolves an uncertain tool execution without replay.
+    pub fn reconcile_tool_execution(&mut self, _id: &str) -> Result<(), StorageError> {
+        Err(StorageError::OperationFailed)
+    }
+
     /// Atomically reserve a conservative token allowance across all processes.
     pub fn reserve_tokens(&mut self, limit: u64, amount: u64) -> Result<Option<i64>, StorageError> {
         let limit = i64::try_from(limit).map_err(|_| StorageError::OperationFailed)?;
