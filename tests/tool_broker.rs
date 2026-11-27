@@ -563,9 +563,14 @@ fn failed_outcome_write_blocks_further_calls_after_reopen() {
     db.execute_batch("DROP TRIGGER reject_outcome;").unwrap();
     let store = jarvis::storage::SqliteStore::open(&path).unwrap();
     let mut broker = Broker::with_approval(contract(), store, "two".into(), "task".into(), 1);
-    assert_eq!(broker.call(&request()), Err(BrokerError::Denied));
+    assert_eq!(
+        broker.call(&request()),
+        Err(BrokerError::ReconciliationRequired)
+    );
     assert_eq!(broker.executions(), 0);
     drop(broker);
+    let state: (i64, i64, i64) = db.query_row("SELECT (SELECT pending FROM tool_executions WHERE approval_id = 'one'), (SELECT consumed FROM tool_approvals WHERE id = 'two'), (SELECT used FROM tool_budget)", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+    assert_eq!(state, (1, 0, 1));
     let mut store = jarvis::storage::SqliteStore::open(&path).unwrap();
     db.execute_batch("CREATE TRIGGER reject_reconciliation BEFORE INSERT ON events WHEN NEW.event LIKE '%tool_execution_reconciliation%' BEGIN SELECT RAISE(ABORT, 'failed'); END;").unwrap();
     assert!(store
