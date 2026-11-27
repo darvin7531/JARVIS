@@ -397,6 +397,11 @@ impl SqliteStore {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let parent = path.parent().ok_or(StorageError::OperationFailed)?;
+        let parent = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
         let parent_metadata =
             std::fs::symlink_metadata(parent).map_err(|_| StorageError::OperationFailed)?;
         if !parent_metadata.is_dir()
