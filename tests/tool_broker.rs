@@ -284,6 +284,23 @@ fn expired_and_mismatched_approvals_never_execute() {
 }
 
 #[test]
+fn approval_cannot_be_issued_for_missing_or_stale_task() {
+    let path = std::env::temp_dir().join(format!("jarvis-approval-issue-{}", std::process::id()));
+    let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
+    let expiry = SystemTime::now() + Duration::from_secs(60);
+    assert!(store
+        .issue_tool_approval("missing", "task", 1, &request(), expiry)
+        .is_err());
+    create_task(&mut store);
+    assert!(store
+        .issue_tool_approval("stale", "task", 2, &request(), expiry)
+        .is_err());
+    assert!(store
+        .issue_tool_approval("valid", "task", 1, &request(), expiry)
+        .is_ok());
+}
+
+#[test]
 fn backup_does_not_revive_pending_approval() {
     let root = std::env::temp_dir().join(format!("jarvis-approval-backup-{}", std::process::id()));
     std::fs::create_dir(&root).unwrap();
