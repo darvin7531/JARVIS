@@ -79,3 +79,5 @@ and verification read. The existing `--mock-response` mode remains deterministic
 An interrupted inference may leave a pending step or budget reservation requiring
 reconciliation; cancellation cannot retract already-sent bytes. Model compliance
 with the proposal schema is not guaranteed.
+
+Owner agent files default to `"mode":"read_only"`; use `"mode":"write"` explicitly for the existing write-and-verify flow. In read-only mode `approval` must identify a separately issued exact `read` request for the configured resource, class and empty text; `expected` is independently checked against both the broker result and the backing mock state. The existing `read_approval` and `permitted_text` fields remain required but are unused in this mode. The owner must provision task, budget and approval; model proposals cannot grant authority. This observes only the specified mock row, not a transactional snapshot or a guarantee against concurrent external modification. Runtime and audit bookkeeping still writes to the workspace; no host tools are invoked.

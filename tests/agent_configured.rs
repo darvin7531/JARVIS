@@ -5,7 +5,7 @@ use std::process::Command;
 fn configured_agent_reaches_shared_config_validation() {
     let path = std::env::temp_dir().join(format!("agent-configured-{}", std::process::id()));
     std::fs::create_dir(&path).unwrap();
-    let owner = json!({"store":path, "task":"task", "revision":1, "approval":"write", "read_approval":"read", "resource":"mock/item", "data_class":"public", "permitted_text":"value", "expected":"value", "expires_unix":4102444800_u64, "context":"test"});
+    let owner = json!({"store":path, "task":"task", "revision":1, "approval":"write", "read_approval":"read", "resource":"mock/item", "data_class":"public", "permitted_text":"value", "expected":"value", "expires_unix":4102444800_u64, "mode":"write", "context":"test"});
     let owner_path = path.join("owner.json");
     std::fs::write(&owner_path, owner.to_string()).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_jarvis"))
@@ -71,7 +71,7 @@ fn configured_proposals_require_complete_stream_and_exact_approval() {
         drop(store);
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let owner = json!({"store":root, "task":"task", "revision":1, "approval":"write", "read_approval":"read", "resource":"mock/item", "data_class":"public", "permitted_text":"approved", "expected":"approved", "expires_unix":expiry.duration_since(UNIX_EPOCH).unwrap().as_secs(), "context":"produce a JSON proposal"});
+        let owner = json!({"store":root, "task":"task", "revision":1, "approval":"write", "read_approval":"read", "resource":"mock/item", "data_class":"public", "permitted_text":"approved", "expected":"approved", "expires_unix":expiry.duration_since(UNIX_EPOCH).unwrap().as_secs(), "mode":"write", "context":"produce a JSON proposal"});
         let config = json!({"models":[{"name":"model", "tier":"t1", "capabilities":["text"], "allowed_data":["public"], "trusted_no_truncation":true, "port":port}], "limits":{"max_tokens":100}, "budget":{"workspace":root, "limit_tokens":1000, "max_input_tokens":200}});
         let owner_path = root.join("owner.json");
         let config_path = root.join("config.json");
@@ -139,7 +139,7 @@ fn sensitive_owner_never_reaches_untrusted_model() {
     drop(store);
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
-    let owner = json!({"store":root,"task":"task","revision":1,"approval":"write","read_approval":"read","resource":"mock/item","data_class":"sensitive","permitted_text":"x","expected":"x","expires_unix":4102444800_u64,"context":"secret"});
+    let owner = json!({"store":root,"task":"task","revision":1,"approval":"write","read_approval":"read","resource":"mock/item","data_class":"sensitive","permitted_text":"x","expected":"x","expires_unix":4102444800_u64,"mode":"write", "context":"secret"});
     let config = json!({"models":[{"name":"model","tier":"t1","capabilities":["text"],"allowed_data":["sensitive"],"trusted_no_truncation":true,"port":listener.local_addr().unwrap().port()}],"budget":{"workspace":root,"limit_tokens":1000,"max_input_tokens":200}});
     let owner_path = root.join("owner.json");
     let config_path = root.join("config.json");
@@ -181,7 +181,7 @@ fn configured_rejection_finishes_only_proven_pre_dispatch_steps() {
         drop(store);
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
-        let owner = json!({"store":root,"task":"task","revision":1,"approval":"write","read_approval":"read","resource":"mock/item","data_class":if case == "policy" {"sensitive"} else {"public"},"permitted_text":"x","expected":"x","expires_unix":4102444800_u64,"context":"produce a proposal"});
+        let owner = json!({"store":root,"task":"task","revision":1,"approval":"write","read_approval":"read","resource":"mock/item","data_class":if case == "policy" {"sensitive"} else {"public"},"permitted_text":"x","expected":"x","expires_unix":4102444800_u64,"mode":"write", "context":"produce a proposal"});
         let config = json!({"models":[{"name":"model","tier":"t1","capabilities":["text"],"allowed_data":["public"],"trusted_no_truncation":true,"port":listener.local_addr().unwrap().port()}],"limits":{"max_tokens":100},"budget":{"workspace":root,"limit_tokens":if case == "budget" {0} else {1000},"max_input_tokens":200}});
         let owner_path = root.join("owner.json");
         let config_path = root.join("config.json");

@@ -97,13 +97,7 @@ fn run() -> Result<(), Error> {
             }
             .map_err(Error::Chat);
         }
-        if mode != "--mock"
-            || args.next().is_none_or(|arg| arg != "diagnose")
-            || args.next().is_some()
-        {
-            return Err(Error::InvalidArguments);
-        }
-        return agent::run().map_err(Error::Chat);
+        return Err(Error::InvalidArguments);
     }
     if args.peek().is_some_and(|arg| arg == "chat") {
         args.next();

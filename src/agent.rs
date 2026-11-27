@@ -1,4 +1,4 @@
-use jarvis::storage::{SqliteStore, Task};
+use jarvis::storage::SqliteStore;
 use jarvis::tool_policy::{Broker, BrokerError, DataClass, Scope, TaskContract, ToolRequest};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -170,6 +170,8 @@ struct Owner {
     task: String,
     revision: i64,
     approval: String,
+    #[serde(default)]
+    mode: Mode,
     read_approval: String,
     resource: String,
     data_class: DataClass,
@@ -181,6 +183,14 @@ struct Owner {
     max_steps: u32,
     #[serde(default = "one")]
     max_failures: u32,
+}
+
+#[derive(Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum Mode {
+    Write,
+    #[default]
+    ReadOnly,
 }
 
 fn one() -> u32 {
@@ -349,14 +359,20 @@ fn run_owner_inner(
     if cancelled.load(Ordering::Relaxed) {
         return Err("cancelled");
     }
+    let read_only = owner.mode == Mode::ReadOnly;
+    let tool = if read_only { "read" } else { "write" };
     let contract = TaskContract {
-        scopes: vec![Scope::Write],
-        tool: "write".into(),
-        action: "write".into(),
+        scopes: vec![if read_only { Scope::Read } else { Scope::Write }],
+        tool: tool.into(),
+        action: tool.into(),
         resource: owner.resource.clone(),
         denied_resources: vec![],
         data_class: owner.data_class,
-        permitted_text: owner.permitted_text,
+        permitted_text: if read_only {
+            String::new()
+        } else {
+            owner.permitted_text
+        },
         expires_at: expires,
     };
     let store = SqliteStore::open(&owner.store).map_err(|_| "agent_storage")?;
@@ -405,6 +421,44 @@ fn run_owner_inner(
             )
             .map_err(|_| "agent_storage")?;
         return Err("agent_tool");
+    }
+    if read_only {
+        // T0 reads the backing state independently of the broker result.
+        let db = rusqlite::Connection::open_with_flags(
+            owner.store.join("jarvis.sqlite3"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .map_err(|_| "agent_verify")?;
+        let state: Result<(String, Option<String>), _> = db.query_row(
+            "SELECT value, data_class FROM mock_state WHERE resource = ?1",
+            [&owner.resource],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        );
+        let class = match owner.data_class {
+            DataClass::Public => "public",
+            DataClass::Sensitive => "sensitive",
+        };
+        let verified = matches!(state, Ok((ref value, Some(ref stored_class))) if value == &owner.expected && stored_class == class)
+            && matches!(outcome, Ok(ref value) if value == &owner.expected);
+        let status = if verified {
+            "verified"
+        } else {
+            "verification_failed"
+        };
+        drop(db);
+        let mut store = SqliteStore::open(&owner.store).map_err(|_| "agent_storage")?;
+        store
+            .append_event_at_revision(
+                &owner.task,
+                owner.revision,
+                &serde_json::json!({"type":"checkpoint", "status":status, "changes":0}).to_string(),
+            )
+            .map_err(|_| "agent_storage")?;
+        if !verified {
+            return Err("agent_verify");
+        }
+        println!("{}", serde_json::json!({"status":status,"changes":0}));
+        return Ok(());
     }
     // Independent broker read, with a separate owner-issued approval. The write
     // result is not used as verification and the store is reopened first.
@@ -474,80 +528,6 @@ fn run_owner_inner(
     Ok(())
 }
 
-// This tracer is deliberately limited to an empty, isolated mock resource.
-// ponytail: one read-only scenario; add owner-supplied contracts for other tasks.
-pub fn run() -> Result<(), &'static str> {
-    let now = SystemTime::now();
-    let path = std::env::temp_dir().join(format!(
-        "jarvis-agent-{}-{}",
-        std::process::id(),
-        now.duration_since(UNIX_EPOCH)
-            .map_err(|_| "agent_clock")?
-            .as_nanos()
-    ));
-    let mut store = SqliteStore::create(&path).map_err(|_| "agent_storage")?;
-    store
-        .create_task(
-            &Task {
-                id: "diagnose".into(),
-                version: 1,
-                title: "read-only diagnosis".into(),
-            },
-            "created",
-            &[],
-        )
-        .map_err(|_| "agent_storage")?;
-    store
-        .initialize_tool_budget(1)
-        .map_err(|_| "agent_storage")?;
-    let expires = now + Duration::from_secs(60);
-    let contract = TaskContract {
-        scopes: vec![Scope::Read],
-        tool: "read".into(),
-        action: "read".into(),
-        resource: "mock/item".into(),
-        denied_resources: vec![],
-        data_class: DataClass::Public,
-        permitted_text: String::new(),
-        expires_at: expires,
-    };
-    // Owner authorizes this exact request, independently of the inference output.
-    let authorized: ToolRequest = serde_json::from_str(r#"{"tool":"read","action":"read","resource":"mock/item","data_class":"public","arguments":{"text":""}}"#).map_err(|_| "agent_internal")?;
-    store
-        .issue_tool_approval("read", "diagnose", 1, &authorized, expires)
-        .map_err(|_| "agent_storage")?;
-    // Deterministic structured mock inference; it cannot create or widen authority.
-    let proposal: ToolRequest = serde_json::from_str(r#"{"tool":"read","action":"read","resource":"mock/item","data_class":"public","arguments":{"text":""}}"#).map_err(|_| "agent_inference")?;
-    let mut broker = Broker::with_approval(contract, store, "read".into(), "diagnose".into(), 1);
-    let observed = broker.call(&proposal).map_err(|_| "agent_tool")?;
-    drop(broker);
-    // T0 reads the backing state independently; never trust the tool's success alone.
-    let db = rusqlite::Connection::open_with_flags(
-        path.join("jarvis.sqlite3"),
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .map_err(|_| "agent_verify")?;
-    let count: i64 = db
-        .query_row("SELECT count(*) FROM mock_state", [], |r| r.get(0))
-        .map_err(|_| "agent_verify")?;
-    if count != 0 || !observed.is_empty() {
-        return Err("agent_verify");
-    }
-    drop(db);
-    let mut store = SqliteStore::open(&path).map_err(|_| "agent_storage")?;
-    store
-        .append_event(
-            "diagnose",
-            r#"{"type":"checkpoint","status":"verified","changes":0}"#,
-        )
-        .map_err(|_| "agent_storage")?;
-    println!(
-        "{}",
-        serde_json::json!({"status":"verified","changes":0,"checkpoint":path.to_string_lossy()})
-    );
-    Ok(())
-}
-
 #[cfg(test)]
 thread_local! {
     static FAIL_OUTCOME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -557,6 +537,7 @@ thread_local! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jarvis::storage::Task;
     use serde_json::json;
 
     #[test]
@@ -591,7 +572,7 @@ mod tests {
             .issue_tool_approval("read", "task", 1, &request("read", ""), expires)
             .unwrap();
         drop(store);
-        let owner = json!({"store":path, "task":"task", "revision":1, "approval":"write", "read_approval":"read", "resource":"mock/item", "data_class":"public", "permitted_text":"value", "expected":"value", "expires_unix":expires.duration_since(UNIX_EPOCH).unwrap().as_secs(), "context":"test"});
+        let owner = json!({"store":path, "task":"task", "revision":1, "approval":"write", "read_approval":"read", "resource":"mock/item", "data_class":"public", "permitted_text":"value", "expected":"value", "expires_unix":expires.duration_since(UNIX_EPOCH).unwrap().as_secs(), "mode":"write", "context":"test"});
         let owner_path = path.join("owner.json");
         let proposal_path = path.join("proposal.json");
         std::fs::write(&owner_path, owner.to_string()).unwrap();
@@ -645,7 +626,7 @@ mod tests {
         let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
         db.execute_batch("UPDATE tool_approvals SET consumed = 1 WHERE id = 'pending'; UPDATE tool_budget SET used = 1; INSERT INTO tool_executions (approval_id, pending) VALUES ('pending', 1);").unwrap();
         drop(db);
-        let owner = json!({"store":path, "task":"task", "revision":1, "approval":"write", "read_approval":"missing", "resource":"mock/item", "data_class":"public", "permitted_text":"value", "expected":"value", "expires_unix":expires.duration_since(UNIX_EPOCH).unwrap().as_secs(), "context":"test"});
+        let owner = json!({"store":path, "task":"task", "revision":1, "approval":"write", "read_approval":"missing", "resource":"mock/item", "data_class":"public", "permitted_text":"value", "expected":"value", "expires_unix":expires.duration_since(UNIX_EPOCH).unwrap().as_secs(), "mode":"write", "context":"test"});
         let owner_path = path.join("owner.json");
         let proposal_path = path.join("proposal.json");
         std::fs::write(&owner_path, owner.to_string()).unwrap();
@@ -689,7 +670,7 @@ mod tests {
             .issue_tool_approval("write", "task", 1, &request, expires)
             .unwrap();
         drop(store);
-        let owner = json!({"store":path, "task":"task", "revision":1, "approval":"write", "read_approval":"missing", "resource":"mock/item", "data_class":"public", "permitted_text":"value", "expected":"value", "expires_unix":expires.duration_since(UNIX_EPOCH).unwrap().as_secs(), "context":"test"});
+        let owner = json!({"store":path, "task":"task", "revision":1, "approval":"write", "read_approval":"missing", "resource":"mock/item", "data_class":"public", "permitted_text":"value", "expected":"value", "expires_unix":expires.duration_since(UNIX_EPOCH).unwrap().as_secs(), "mode":"write", "context":"test"});
         let owner_path = path.join("owner.json");
         let proposal_path = path.join("proposal.json");
         std::fs::write(&owner_path, owner.to_string()).unwrap();

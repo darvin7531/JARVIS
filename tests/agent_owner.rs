@@ -43,7 +43,7 @@ fn owner_approval_is_independent_of_model_and_write_is_verified() {
         .issue_tool_approval("read-owner", "owner-task", 1, &req("read", ""), expires)
         .unwrap();
     drop(store);
-    let owner = json!({"store":path, "task":"owner-task", "revision":1, "approval":"write-owner", "read_approval":"read-owner", "resource":"mock/owner", "data_class":"public", "permitted_text":"approved", "expected":"approved", "expires_unix":expires.duration_since(UNIX_EPOCH).unwrap().as_secs(), "context":"write approved value"});
+    let owner = json!({"store":path, "task":"owner-task", "revision":1, "approval":"write-owner", "read_approval":"read-owner", "resource":"mock/owner", "data_class":"public", "permitted_text":"approved", "expected":"approved", "expires_unix":expires.duration_since(UNIX_EPOCH).unwrap().as_secs(), "mode":"write", "context":"write approved value"});
     let owner_path = path.join("owner.json");
     let proposal_path = path.join("proposal.json");
     std::fs::write(&owner_path, owner.to_string()).unwrap();
@@ -171,7 +171,7 @@ fn owner_loop_skips_non_action_and_stops_after_verified_write() {
         .issue_tool_approval("read-owner", "owner-task", 1, &req("read", ""), expires)
         .unwrap();
     drop(store);
-    let owner = json!({"store":path, "task":"owner-task", "revision":1, "approval":"write-owner", "read_approval":"read-owner", "resource":"mock/owner", "data_class":"public", "permitted_text":"approved", "expected":"approved", "expires_unix":expires.duration_since(UNIX_EPOCH).unwrap().as_secs(), "context":"write approved value", "max_steps":3, "max_failures":2});
+    let owner = json!({"store":path, "task":"owner-task", "revision":1, "approval":"write-owner", "read_approval":"read-owner", "resource":"mock/owner", "data_class":"public", "permitted_text":"approved", "expected":"approved", "expires_unix":expires.duration_since(UNIX_EPOCH).unwrap().as_secs(), "mode":"write", "context":"write approved value", "max_steps":3, "max_failures":2});
     let owner_path = path.join("owner.json");
     let proposal_path = path.join("proposal.json");
     std::fs::write(&owner_path, owner.to_string()).unwrap();
@@ -234,7 +234,7 @@ fn missing_read_approval_records_failed_verification_without_replay() {
         .issue_tool_approval("write", "task", 1, &req, expires)
         .unwrap();
     drop(store);
-    let owner = json!({"store":path, "task":"task", "revision":1, "approval":"write", "read_approval":"missing", "resource":"mock/item", "data_class":"public", "permitted_text":"value", "expected":"value", "expires_unix":expires.duration_since(UNIX_EPOCH).unwrap().as_secs(), "context":"test"});
+    let owner = json!({"store":path, "task":"task", "revision":1, "approval":"write", "read_approval":"missing", "resource":"mock/item", "data_class":"public", "permitted_text":"value", "expected":"value", "expires_unix":expires.duration_since(UNIX_EPOCH).unwrap().as_secs(), "mode":"write", "context":"test"});
     let owner_path = path.join("owner.json");
     let proposal_path = path.join("proposal.json");
     std::fs::write(&owner_path, owner.to_string()).unwrap();
@@ -283,7 +283,7 @@ fn step_limit_survives_rerun() {
         .unwrap();
     drop(store);
     let expires = SystemTime::now() + Duration::from_secs(300);
-    let owner = json!({"store":path, "task":"task", "revision":1, "approval":"write", "read_approval":"read", "resource":"mock/item", "data_class":"public", "permitted_text":"value", "expected":"value", "expires_unix":expires.duration_since(UNIX_EPOCH).unwrap().as_secs(), "context":"test", "max_steps":1});
+    let owner = json!({"store":path, "task":"task", "revision":1, "approval":"write", "read_approval":"read", "resource":"mock/item", "data_class":"public", "permitted_text":"value", "expected":"value", "expires_unix":expires.duration_since(UNIX_EPOCH).unwrap().as_secs(), "mode":"write", "context":"test", "max_steps":1});
     let owner_path = path.join("owner.json");
     let proposal_path = path.join("proposal.json");
     std::fs::write(&owner_path, owner.to_string()).unwrap();
@@ -333,7 +333,7 @@ fn stale_revision_cannot_checkpoint_newer_task() {
         .unwrap();
     drop(db);
     let expires = SystemTime::now() + Duration::from_secs(300);
-    let owner = json!({"store":path, "task":"task", "revision":1, "approval":"write", "read_approval":"read", "resource":"mock/item", "data_class":"public", "permitted_text":"value", "expected":"value", "expires_unix":expires.duration_since(UNIX_EPOCH).unwrap().as_secs(), "context":"test"});
+    let owner = json!({"store":path, "task":"task", "revision":1, "approval":"write", "read_approval":"read", "resource":"mock/item", "data_class":"public", "permitted_text":"value", "expected":"value", "expires_unix":expires.duration_since(UNIX_EPOCH).unwrap().as_secs(), "mode":"write", "context":"test"});
     let owner_path = path.join("owner.json");
     let proposal_path = path.join("proposal.json");
     std::fs::write(&owner_path, owner.to_string()).unwrap();
@@ -426,7 +426,7 @@ fn restored_backup_blocks_agent_before_inference() {
     let mut restored = SqliteStore::open(&snapshot).unwrap();
     assert!(!restored.agent_step("task", 1, 1, 1).unwrap());
     drop(restored);
-    let owner = json!({"store":snapshot, "task":"task", "revision":1, "approval":"write", "read_approval":"read", "resource":"mock/owner", "data_class":"public", "permitted_text":"approved", "expected":"approved", "expires_unix":(SystemTime::now() + Duration::from_secs(300)).duration_since(UNIX_EPOCH).unwrap().as_secs(), "context":"test"});
+    let owner = json!({"store":snapshot, "task":"task", "revision":1, "approval":"write", "read_approval":"read", "resource":"mock/owner", "data_class":"public", "permitted_text":"approved", "expected":"approved", "expires_unix":(SystemTime::now() + Duration::from_secs(300)).duration_since(UNIX_EPOCH).unwrap().as_secs(), "mode":"write", "context":"test"});
     let owner_path = root.join("owner.json");
     let response_path = root.join("response.json");
     std::fs::write(&owner_path, owner.to_string()).unwrap();
@@ -452,11 +452,27 @@ fn owner_read_only_diagnosis_rejects_write_and_observes_seeded_state() {
     let path = std::env::temp_dir().join(format!("jarvis-owner-diagnosis-{}", std::process::id()));
     let mut store = SqliteStore::create(&path).unwrap();
     for id in ["diagnose", "denied"] {
-        store.create_task(&Task { id: id.into(), version: 1, title: "diagnose".into() }, "created", &[]).unwrap();
+        store
+            .create_task(
+                &Task {
+                    id: id.into(),
+                    version: 1,
+                    title: "diagnose".into(),
+                },
+                "created",
+                &[],
+            )
+            .unwrap();
     }
     store.initialize_tool_budget(4).unwrap();
     let expiry = SystemTime::now() + Duration::from_secs(300);
-    let read = ToolRequest { tool: "read".into(), action: "read".into(), resource: "mock/item".into(), data_class: DataClass::Public, arguments: json!({"text":""}) };
+    let read = ToolRequest {
+        tool: "read".into(),
+        action: "read".into(),
+        resource: "mock/item".into(),
+        data_class: DataClass::Public,
+        arguments: json!({"text":""}),
+    };
     for id in ["diagnose", "denied"] {
         store.issue_tool_approval(id, id, 1, &read, expiry).unwrap();
     }
@@ -464,8 +480,19 @@ fn owner_read_only_diagnosis_rejects_write_and_observes_seeded_state() {
     let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
     db.execute("INSERT INTO mock_state(resource,value,data_class) VALUES('mock/item','seeded','public'),('mock/other','untouched','sensitive')", []).unwrap();
     let snapshot = || {
-        let mut q = db.prepare("SELECT resource,value,data_class FROM mock_state ORDER BY resource").unwrap();
-        q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
+        let mut q = db
+            .prepare("SELECT resource,value,data_class FROM mock_state ORDER BY resource")
+            .unwrap();
+        q.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
     };
     let before = snapshot();
     let owner_path = path.join("owner.json");
@@ -473,22 +500,44 @@ fn owner_read_only_diagnosis_rejects_write_and_observes_seeded_state() {
     let run = |task: &str, request: serde_json::Value| {
         let owner = json!({"store":path,"task":task,"revision":1,"approval":task,"read_approval":"unused","resource":"mock/item","data_class":"public","permitted_text":"","expected":"seeded","expires_unix":expiry.duration_since(UNIX_EPOCH).unwrap().as_secs(),"context":"diagnose","mode":"read_only","max_steps":2});
         std::fs::write(&owner_path, owner.to_string()).unwrap();
-        std::fs::write(&proposal_path, json!([{"kind":"continue"},{"kind":"tool","request":request}]).to_string()).unwrap();
-        Command::new(env!("CARGO_BIN_EXE_jarvis")).args(["agent","--owner"]).arg(&owner_path).arg("--mock-response").arg(&proposal_path).output().unwrap()
+        std::fs::write(
+            &proposal_path,
+            json!([{"kind":"continue"},{"kind":"tool","request":request}]).to_string(),
+        )
+        .unwrap();
+        Command::new(env!("CARGO_BIN_EXE_jarvis"))
+            .args(["agent", "--owner"])
+            .arg(&owner_path)
+            .arg("--mock-response")
+            .arg(&proposal_path)
+            .output()
+            .unwrap()
     };
-    let denied = run("denied", json!({"tool":"write","action":"write","resource":"mock/item","data_class":"public","arguments":{"text":"changed"}}));
+    let denied = run(
+        "denied",
+        json!({"tool":"write","action":"write","resource":"mock/item","data_class":"public","arguments":{"text":"changed"}}),
+    );
     assert!(!denied.status.success());
     assert!(String::from_utf8_lossy(&denied.stderr).contains("agent_tool"));
     assert_eq!(snapshot(), before);
     let success = run("diagnose", serde_json::to_value(&read).unwrap());
-    assert!(success.status.success(), "{}", String::from_utf8_lossy(&success.stderr));
-    assert_eq!(serde_json::from_slice::<serde_json::Value>(&success.stdout).unwrap()["status"], "verified");
+    assert!(
+        success.status.success(),
+        "{}",
+        String::from_utf8_lossy(&success.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&success.stdout).unwrap()["status"],
+        "verified"
+    );
     assert_eq!(snapshot(), before);
     drop(db);
     let store = SqliteStore::open(&path).unwrap();
     let events = store.events("diagnose").unwrap();
     assert!(events.iter().any(|e| e.contains("tool_execution_outcome")));
-    assert!(events.iter().any(|e| e.contains("checkpoint") && e.contains("verified")));
+    assert!(events
+        .iter()
+        .any(|e| e.contains("checkpoint") && e.contains("verified")));
     drop(store);
     std::fs::remove_dir_all(path).unwrap();
 }
