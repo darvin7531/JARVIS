@@ -55,10 +55,13 @@ pub enum BrokerError {
     InvalidArguments,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct InertArguments {
-    text: String,
+pub(crate) fn inert_text(arguments: &Value) -> Option<&str> {
+    let object = arguments.as_object()?;
+    if object.len() != 1 {
+        return None;
+    }
+    let text = object.get("text")?.as_str()?;
+    (text.len() <= 1024).then_some(text)
 }
 
 // The owner must keep broker construction outside the untrusted request path.
@@ -116,12 +119,8 @@ impl Broker {
         {
             return Err(BrokerError::Denied);
         }
-        let args: InertArguments = serde_json::from_value(request.arguments.clone())
-            .map_err(|_| BrokerError::InvalidArguments)?;
-        if args.text.len() > 1024 {
-            return Err(BrokerError::InvalidArguments);
-        }
-        if args.text != contract.permitted_text {
+        let text = inert_text(&request.arguments).ok_or(BrokerError::InvalidArguments)?;
+        if text != contract.permitted_text {
             return Err(BrokerError::Denied);
         }
         let (store, id, task, revision) = self.approval.as_mut().ok_or(BrokerError::Denied)?;
@@ -132,6 +131,6 @@ impl Broker {
             return Err(BrokerError::Denied);
         }
         self.executions += 1;
-        Ok(args.text)
+        Ok(text.to_owned())
     }
 }

@@ -209,7 +209,15 @@ impl SqliteStore {
                 .as_secs(),
         )
         .map_err(|_| StorageError::OperationFailed)?;
-        if id.is_empty() || task.is_empty() || revision < 0 {
+        if id.is_empty()
+            || task.is_empty()
+            || revision < 0
+            || request.tool != "inert"
+            || request.action != "echo"
+            || request.resource.is_empty()
+            || request.resource.len() > 128
+            || crate::tool_policy::inert_text(&request.arguments).is_none()
+        {
             return Err(StorageError::OperationFailed);
         }
         let request = serde_json::to_string(request).map_err(|_| StorageError::OperationFailed)?;
