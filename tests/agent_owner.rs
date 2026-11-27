@@ -446,3 +446,49 @@ fn restored_backup_blocks_agent_before_inference() {
     drop(db);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn owner_read_only_diagnosis_rejects_write_and_observes_seeded_state() {
+    let path = std::env::temp_dir().join(format!("jarvis-owner-diagnosis-{}", std::process::id()));
+    let mut store = SqliteStore::create(&path).unwrap();
+    for id in ["diagnose", "denied"] {
+        store.create_task(&Task { id: id.into(), version: 1, title: "diagnose".into() }, "created", &[]).unwrap();
+    }
+    store.initialize_tool_budget(4).unwrap();
+    let expiry = SystemTime::now() + Duration::from_secs(300);
+    let read = ToolRequest { tool: "read".into(), action: "read".into(), resource: "mock/item".into(), data_class: DataClass::Public, arguments: json!({"text":""}) };
+    for id in ["diagnose", "denied"] {
+        store.issue_tool_approval(id, id, 1, &read, expiry).unwrap();
+    }
+    drop(store);
+    let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
+    db.execute("INSERT INTO mock_state(resource,value,data_class) VALUES('mock/item','seeded','public'),('mock/other','untouched','sensitive')", []).unwrap();
+    let snapshot = || {
+        let mut q = db.prepare("SELECT resource,value,data_class FROM mock_state ORDER BY resource").unwrap();
+        q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))).unwrap().collect::<Result<Vec<_>, _>>().unwrap()
+    };
+    let before = snapshot();
+    let owner_path = path.join("owner.json");
+    let proposal_path = path.join("proposal.json");
+    let run = |task: &str, request: serde_json::Value| {
+        let owner = json!({"store":path,"task":task,"revision":1,"approval":task,"read_approval":"unused","resource":"mock/item","data_class":"public","permitted_text":"","expected":"seeded","expires_unix":expiry.duration_since(UNIX_EPOCH).unwrap().as_secs(),"context":"diagnose","mode":"read_only","max_steps":2});
+        std::fs::write(&owner_path, owner.to_string()).unwrap();
+        std::fs::write(&proposal_path, json!([{"kind":"continue"},{"kind":"tool","request":request}]).to_string()).unwrap();
+        Command::new(env!("CARGO_BIN_EXE_jarvis")).args(["agent","--owner"]).arg(&owner_path).arg("--mock-response").arg(&proposal_path).output().unwrap()
+    };
+    let denied = run("denied", json!({"tool":"write","action":"write","resource":"mock/item","data_class":"public","arguments":{"text":"changed"}}));
+    assert!(!denied.status.success());
+    assert!(String::from_utf8_lossy(&denied.stderr).contains("agent_tool"));
+    assert_eq!(snapshot(), before);
+    let success = run("diagnose", serde_json::to_value(&read).unwrap());
+    assert!(success.status.success(), "{}", String::from_utf8_lossy(&success.stderr));
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&success.stdout).unwrap()["status"], "verified");
+    assert_eq!(snapshot(), before);
+    drop(db);
+    let store = SqliteStore::open(&path).unwrap();
+    let events = store.events("diagnose").unwrap();
+    assert!(events.iter().any(|e| e.contains("tool_execution_outcome")));
+    assert!(events.iter().any(|e| e.contains("checkpoint") && e.contains("verified")));
+    drop(store);
+    std::fs::remove_dir_all(path).unwrap();
+}
