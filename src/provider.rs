@@ -208,13 +208,13 @@ impl Ollama {
                             error = Some(Error::InvalidStream);
                             break;
                         };
-                        output_bytes = match output_bytes.checked_add(text.len()) {
-                            Some(n) if n <= r.max_output_bytes => n,
-                            _ => {
-                                error = Some(Error::Budget);
-                                break;
-                            }
-                        };
+                        let next_bytes = output_bytes.checked_add(text.len());
+                        let over_bytes = next_bytes.is_none_or(|n| n > r.max_output_bytes);
+                        if over_bytes && !done {
+                            error = Some(Error::Budget);
+                            break;
+                        }
+                        output_bytes = next_bytes.unwrap_or(usize::MAX);
                         if done {
                             match value.get("done_reason") {
                                 Some(reason) if reason.as_str() == Some("stop") => {}
@@ -247,14 +247,18 @@ impl Ollama {
                                     break;
                                 }
                             }
+                            if over_bytes {
+                                incomplete = true;
+                            }
                         }
-                        if !(done
-                            && incomplete
-                            && (usage.as_ref().is_some_and(|u| {
-                                u.output_tokens > u64::from(r.max_tokens)
-                                    || max_input_tokens
-                                        .is_some_and(|max| u.input_tokens > u64::from(max))
-                            })))
+                        if !over_bytes
+                            && !(done
+                                && incomplete
+                                && (usage.as_ref().is_some_and(|u| {
+                                    u.output_tokens > u64::from(r.max_tokens)
+                                        || max_input_tokens
+                                            .is_some_and(|max| u.input_tokens > u64::from(max))
+                                })))
                         {
                             emit(text);
                         }

@@ -255,6 +255,9 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
         if manual.is_some() || prompt != "ping" {
             return Err("invalid_arguments");
         }
+        if b"pong\n".len() > config.limits.max_output_bytes {
+            return Err("budget_exceeded");
+        }
         return write_output(fd, b"pong\n", &cancelled, started, timeout);
     }
     let mut caps = Vec::new();
