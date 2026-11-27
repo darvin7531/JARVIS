@@ -402,3 +402,30 @@ fn concurrent_admission_and_limit_changes_are_denied() {
     drop(store);
     std::fs::remove_dir_all(path).unwrap();
 }
+
+#[test]
+fn restored_backup_blocks_agent_before_inference() {
+    let root = std::env::temp_dir().join(format!("jarvis-agent-restore-{}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    let source = root.join("source");
+    let snapshot = root.join("snapshot");
+    let mut store = SqliteStore::create(&source).unwrap();
+    store.create_task(&Task { id: "task".into(), version: 1, title: "test".into() }, "created", &[]).unwrap();
+    store.backup(&snapshot).unwrap();
+    drop(store);
+    let mut restored = SqliteStore::open(&snapshot).unwrap();
+    assert!(!restored.agent_step("task", 1, 1, 1).unwrap());
+    drop(restored);
+    let owner = json!({"store":snapshot, "task":"task", "revision":1, "approval":"write", "read_approval":"read", "resource":"mock/owner", "data_class":"public", "permitted_text":"approved", "expected":"approved", "expires_unix":(SystemTime::now() + Duration::from_secs(300)).duration_since(UNIX_EPOCH).unwrap().as_secs(), "context":"test"});
+    let owner_path = root.join("owner.json");
+    let response_path = root.join("response.json");
+    std::fs::write(&owner_path, owner.to_string()).unwrap();
+    std::fs::write(&response_path, r#"{"kind":"continue"}"#).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_jarvis")).args(["agent", "--owner"]).arg(owner_path).arg("--mock-response").arg(response_path).output().unwrap();
+    assert!(!output.status.success());
+    let db = rusqlite::Connection::open(snapshot.join("jarvis.sqlite3")).unwrap();
+    let state: (i64, i64) = db.query_row("SELECT (SELECT count(*) FROM agent_runtime), (SELECT count(*) FROM events WHERE event LIKE '%checkpoint%')", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    assert_eq!(state, (0, 0));
+    drop(db);
+    std::fs::remove_dir_all(root).unwrap();
+}
