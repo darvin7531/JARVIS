@@ -136,7 +136,7 @@ fn callback_panic_closes_transport() {
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
         let mut buf = [0; 4096];
-        stream.read(&mut buf).unwrap();
+        assert!(stream.read(&mut buf).unwrap() > 0);
         stream.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"response\":\"x\",\"done\":false}\n").unwrap();
         matches!(stream.read(&mut buf), Ok(0))
     });
