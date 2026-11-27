@@ -1,5 +1,5 @@
 use jarvis::inference::{route, Capability, DataClass, ModelProfile, RouteError, Tier};
-use jarvis::provider::{Ollama, Provider, Request};
+use jarvis::provider::{Ollama, Request};
 use serde::Deserialize;
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use std::{
@@ -20,6 +20,14 @@ struct Config {
     models: Vec<Model>,
     #[serde(default)]
     limits: Limits,
+    budget: Option<Budget>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Budget {
+    workspace: std::path::PathBuf,
+    limit_tokens: u64,
+    max_input_tokens: u32,
 }
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -302,17 +310,55 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
         max_output_bytes: config.limits.max_output_bytes,
         timeout: timeout.checked_sub(started.elapsed()).ok_or("timeout")?,
     };
+    let mut reservation = if let Some(budget) = &config.budget {
+        let amount = u64::from(budget.max_input_tokens) + u64::from(config.limits.max_tokens);
+        if amount > budget.limit_tokens {
+            return Err("budget_exceeded");
+        }
+        if budget.max_input_tokens == 0 || budget.limit_tokens > i64::MAX as u64 {
+            return Err("invalid_config");
+        }
+        let mut store = jarvis::storage::SqliteStore::open(&budget.workspace)
+            .map_err(|_| "budget_storage_failed")?;
+        let id = store
+            .reserve_tokens(budget.limit_tokens, amount)
+            .map_err(|_| "budget_storage_failed")?
+            .ok_or("budget_exceeded")?;
+        Some((store, id))
+    } else {
+        None
+    };
     let mut failure = None;
-    let usage = Ollama {
+    let result = Ollama {
         port: config.models[index].port,
     }
-    .generate(&req, &cancelled, &mut |text| {
-        if let Err(code) = write_output(fd, text.as_bytes(), &cancelled, started, timeout) {
-            failure = Some(code);
-            cancelled.store(true, Ordering::Relaxed);
+    .generate_bounded(
+        &req,
+        &cancelled,
+        &mut |text| {
+            if let Err(code) = write_output(fd, text.as_bytes(), &cancelled, started, timeout) {
+                failure = Some(code);
+                cancelled.store(true, Ordering::Relaxed);
+            }
+        },
+        config.budget.as_ref().map(|b| b.max_input_tokens),
+    );
+    if let Some((store, id)) = &mut reservation {
+        let known = match &result {
+            Ok(usage) | Err(jarvis::provider::Error::Incomplete(usage)) => Some(usage),
+            _ => None,
+        };
+        if let Some(usage) = known {
+            let tokens = usage
+                .input_tokens
+                .checked_add(usage.output_tokens)
+                .ok_or("budget_storage_failed")?;
+            store
+                .settle_tokens(*id, tokens)
+                .map_err(|_| "budget_storage_failed")?;
         }
-    })
-    .map_err(|error| {
+    }
+    let usage = result.map_err(|error| {
         if let jarvis::provider::Error::Incomplete(ref usage) = error {
             eprintln!(
                 "{{\"input_tokens\":{},\"output_tokens\":{}}}",
