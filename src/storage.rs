@@ -755,7 +755,7 @@ mod backup_tests {
         static BLOCKED: AtomicBool = AtomicBool::new(false);
         let root = std::env::temp_dir().join(format!("jarvis-fresh-lock-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let store = SqliteStore::create(&root).unwrap();
+        let mut store = SqliteStore::create(&root).unwrap();
         let expiry = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + 3;
         store.db.execute("INSERT INTO tool_approvals (id, task_id, revision, request, expires, consumed) VALUES ('one', 'task', 1, '{}', ?1, 1)", [expiry as i64]).unwrap();
         let lock = Connection::open(root.join("jarvis.sqlite3")).unwrap();
