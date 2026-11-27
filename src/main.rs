@@ -83,14 +83,18 @@ fn run() -> Result<(), Error> {
         }
         if mode == "--owner" {
             let owner = args.next().ok_or(Error::InvalidArguments)?;
-            if args.next().is_none_or(|arg| arg != "--mock-response") {
-                return Err(Error::InvalidArguments);
-            }
-            let response = args.next().ok_or(Error::InvalidArguments)?;
+            let source = args.next().ok_or(Error::InvalidArguments)?;
+            let input = args.next().ok_or(Error::InvalidArguments)?;
             if args.next().is_some() {
                 return Err(Error::InvalidArguments);
             }
-            return agent::run_owner(&owner, &response).map_err(Error::Chat);
+            return if source == "--mock-response" {
+                agent::run_owner(&owner, &input)
+            } else if source == "--config" {
+                agent::run_configured(&owner, &input)
+            } else {
+                Err("invalid_arguments")
+            }.map_err(Error::Chat);
         }
         if mode != "--mock"
             || args.next().is_none_or(|arg| arg != "diagnose")

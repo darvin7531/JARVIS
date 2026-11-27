@@ -122,6 +122,14 @@ fn bounded_file(path: &OsStr) -> Result<String, &'static str> {
 }
 
 pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'static str> {
+    run_owner_inner(owner_file, response_file, false)
+}
+
+pub fn run_configured(owner_file: &OsStr, config_file: &OsStr) -> Result<(), &'static str> {
+    run_owner_inner(owner_file, config_file, true)
+}
+
+fn run_owner_inner(owner_file: &OsStr, input_file: &OsStr, configured: bool) -> Result<(), &'static str> {
     let owner: Owner =
         serde_json::from_str(&bounded_file(owner_file)?).map_err(|_| "agent_input")?;
     let expires = UNIX_EPOCH
@@ -137,12 +145,16 @@ pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'stat
         .map_err(|_| "agent_signal")?;
     // The process exits after this command; cancellation cannot retract a dispatched call.
     let _signals = (int, term);
-    let response = bounded_file(response_file)?;
-    let scripted: serde_json::Value =
-        serde_json::from_str(&response).map_err(|_| "agent_inference")?;
-    let responses = match scripted {
-        serde_json::Value::Array(items) => items,
-        item => vec![item],
+    let config = if configured { Some(crate::chat::agent_config(input_file)?) } else { None };
+    let responses = if configured {
+        vec![serde_json::Value::Null; owner.max_steps as usize]
+    } else {
+        let response = bounded_file(input_file)?;
+        let scripted: serde_json::Value = serde_json::from_str(&response).map_err(|_| "agent_inference")?;
+        match scripted {
+            serde_json::Value::Array(items) => items,
+            item => vec![item],
+        }
     };
     let mut proposal = None;
     let mut failures = 0;
@@ -162,25 +174,28 @@ pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'stat
         {
             return Err("agent_steps");
         }
-        let text = item.to_string();
-        let provider = MockProvider::new(&text);
-        let request = Request {
-            model: "mock",
-            prompt: &owner.context,
-            max_tokens: 1024,
-            max_output_bytes: 65536,
-            deadline: Instant::now() + Duration::from_secs(10),
+        let output = if let Some(config) = &config {
+            let class = match owner.data_class {
+                DataClass::Public => jarvis::inference::DataClass::Public,
+                DataClass::Sensitive => jarvis::inference::DataClass::Sensitive,
+            };
+            crate::chat::agent_inference(config, &owner.context, class, &cancelled)?
+        } else {
+            let text = item.to_string();
+            let provider = MockProvider::new(&text);
+            let request = Request {
+                model: "mock",
+                prompt: &owner.context,
+                max_tokens: 1024,
+                max_output_bytes: 65536,
+                deadline: Instant::now() + Duration::from_secs(10),
+            };
+            let mut output = String::new();
+            provider
+                .generate(&request, &cancelled, &mut |chunk| output.push_str(chunk))
+                .map_err(|_| if cancelled.load(Ordering::Relaxed) { "cancelled" } else { "agent_inference" })?;
+            output
         };
-        let mut output = String::new();
-        provider
-            .generate(&request, &cancelled, &mut |chunk| output.push_str(chunk))
-            .map_err(|_| {
-                if cancelled.load(Ordering::Relaxed) {
-                    "cancelled"
-                } else {
-                    "agent_inference"
-                }
-            })?;
         // Legacy single-request input remains supported but never supplies authority.
         let parsed = serde_json::from_str::<serde_json::Value>(&output)
             .map_err(|_| ())
