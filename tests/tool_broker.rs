@@ -776,3 +776,15 @@ fn owner_reconciliation_records_each_factual_outcome() {
         .unwrap();
     assert_eq!(used, 4);
 }
+
+#[test]
+fn cancellation_before_dispatch_preserves_approval() {
+    use std::sync::atomic::AtomicBool;
+    let mut broker = approved(contract(), request());
+    assert_eq!(
+        broker.call_cancellable(&request(), &AtomicBool::new(true)),
+        Err(BrokerError::Denied)
+    );
+    assert_eq!(broker.executions(), 0);
+    assert_eq!(broker.call(&request()), Ok("hello".into()));
+}
