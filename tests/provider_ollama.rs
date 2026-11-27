@@ -125,3 +125,29 @@ fn terminal_text_is_not_emitted_when_usage_is_invalid() {
     assert!(result.is_err());
     assert!(text.is_empty(), "invalid terminal text was emitted");
 }
+
+#[test]
+fn callback_panic_closes_transport() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut buf = [0; 4096];
+        stream.read(&mut buf).unwrap();
+        stream.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"response\":\"x\",\"done\":false}\n").unwrap();
+        matches!(stream.read(&mut buf), Ok(0))
+    });
+    let result = std::panic::catch_unwind(|| {
+        let _ = Ollama { port }.generate(&request(), &AtomicBool::new(false), &mut |_| {
+            panic!("callback")
+        });
+    });
+    assert!(result.is_err());
+    assert!(
+        server.join().unwrap(),
+        "curl kept the connection open after panic"
+    );
+}
