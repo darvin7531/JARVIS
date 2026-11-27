@@ -410,7 +410,17 @@ fn restored_backup_blocks_agent_before_inference() {
     let source = root.join("source");
     let snapshot = root.join("snapshot");
     let mut store = SqliteStore::create(&source).unwrap();
-    store.create_task(&Task { id: "task".into(), version: 1, title: "test".into() }, "created", &[]).unwrap();
+    store
+        .create_task(
+            &Task {
+                id: "task".into(),
+                version: 1,
+                title: "test".into(),
+            },
+            "created",
+            &[],
+        )
+        .unwrap();
     store.backup(&snapshot).unwrap();
     drop(store);
     let mut restored = SqliteStore::open(&snapshot).unwrap();
@@ -421,8 +431,15 @@ fn restored_backup_blocks_agent_before_inference() {
     let response_path = root.join("response.json");
     std::fs::write(&owner_path, owner.to_string()).unwrap();
     std::fs::write(&response_path, r#"{"kind":"continue"}"#).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_jarvis")).args(["agent", "--owner"]).arg(owner_path).arg("--mock-response").arg(response_path).output().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_jarvis"))
+        .args(["agent", "--owner"])
+        .arg(owner_path)
+        .arg("--mock-response")
+        .arg(response_path)
+        .output()
+        .unwrap();
     assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("agent_steps"));
     let db = rusqlite::Connection::open(snapshot.join("jarvis.sqlite3")).unwrap();
     let state: (i64, i64) = db.query_row("SELECT (SELECT count(*) FROM agent_runtime), (SELECT count(*) FROM events WHERE event LIKE '%checkpoint%')", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
     assert_eq!(state, (0, 0));

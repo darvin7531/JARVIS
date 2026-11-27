@@ -798,23 +798,59 @@ fn closed_runtime_denies_unused_approvals_without_charging() {
     let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
     create_task(&mut store);
     store.initialize_tool_budget(3).unwrap();
-    for id in ["used", "unused"] {
-        store.issue_tool_approval(id, "task", 1, &request(), SystemTime::now() + Duration::from_secs(60)).unwrap();
+    let mut write = request();
+    write.tool = "write".into();
+    write.action = "write".into();
+    let mut write_contract = contract();
+    write_contract.tool = "write".into();
+    write_contract.action = "write".into();
+    write_contract.scopes = vec![Scope::Write];
+    for (id, text) in [("used", "hello"), ("unused", "changed")] {
+        write.arguments = json!({"text": text});
+        store
+            .issue_tool_approval(
+                id,
+                "task",
+                1,
+                &write,
+                SystemTime::now() + Duration::from_secs(60),
+            )
+            .unwrap();
     }
     assert!(store.agent_step("task", 1, 2, 2).unwrap());
-    let mut broker = Broker::with_approval(contract(), store, "used".into(), "task".into(), 1);
-    assert_eq!(broker.call(&request()), Ok("hello".into()));
+    write.arguments = json!({"text": "hello"});
+    let mut broker = Broker::with_approval(
+        write_contract.clone(),
+        store,
+        "used".into(),
+        "task".into(),
+        1,
+    );
+    assert_eq!(broker.call(&write), Ok("hello".into()));
     drop(broker);
     let mut store = jarvis::storage::SqliteStore::open(&path).unwrap();
-    store.reconcile_agent_runtime("task", 1, ReconciliationOutcome::Succeeded, "owner evidence").unwrap();
+    store
+        .reconcile_agent_runtime(
+            "task",
+            1,
+            ReconciliationOutcome::Succeeded,
+            "owner evidence",
+        )
+        .unwrap();
     drop(store);
     let store = jarvis::storage::SqliteStore::open(&path).unwrap();
-    let mut broker = Broker::with_approval(contract(), store, "unused".into(), "task".into(), 1);
-    assert_eq!(broker.call(&request()), Err(BrokerError::Denied));
+    write.arguments = json!({"text": "changed"});
+    write_contract.permitted_text = "changed".into();
+    let mut broker = Broker::with_approval(write_contract, store, "unused".into(), "task".into(), 1);
+    assert_eq!(broker.call(&write), Err(BrokerError::Denied));
     assert_eq!(broker.executions(), 0);
     let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
     let state: (i64, i64, i64, i64) = db.query_row("SELECT (SELECT consumed FROM tool_approvals WHERE id='used'), (SELECT consumed FROM tool_approvals WHERE id='unused'), (SELECT used FROM tool_budget), (SELECT count(*) FROM tool_executions)", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
     assert_eq!(state, (1, 0, 1, 1));
+    let value: String = db
+        .query_row("SELECT value FROM mock_state WHERE resource = 'task/item'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(value, "hello");
     drop(db);
     drop(broker);
     std::fs::remove_dir_all(path).unwrap();
