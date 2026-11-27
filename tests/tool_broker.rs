@@ -30,7 +30,7 @@ fn create_task(store: &mut jarvis::storage::SqliteStore) {
         )
         .unwrap();
 }
-fn approved(contract: TaskContract, request: ToolRequest) -> Broker {
+fn approved_with_limit(contract: TaskContract, request: ToolRequest, budget: bool) -> Broker {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let path = std::env::temp_dir().join(format!(
@@ -40,6 +40,9 @@ fn approved(contract: TaskContract, request: ToolRequest) -> Broker {
     ));
     let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
     create_task(&mut store);
+    if budget {
+        store.initialize_tool_budget(10).unwrap();
+    }
     store
         .issue_tool_approval(
             "one",
@@ -50,6 +53,9 @@ fn approved(contract: TaskContract, request: ToolRequest) -> Broker {
         )
         .unwrap();
     Broker::with_approval(contract, store, "one".into(), "task".into(), 1)
+}
+fn approved(contract: TaskContract, request: ToolRequest) -> Broker {
+    approved_with_limit(contract, request, true)
 }
 #[test]
 fn forged_request_grant_cannot_authorize_another_resource() {
@@ -168,6 +174,7 @@ fn approval_cannot_be_replayed_after_broker_recreation() {
     let path = std::env::temp_dir().join(format!("jarvis-approval-reopen-{}", std::process::id()));
     let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
     create_task(&mut store);
+    store.initialize_tool_budget(10).unwrap();
     store
         .issue_tool_approval(
             "one",
@@ -191,6 +198,7 @@ fn approval_race_and_identity_are_enforced() {
     let path = std::env::temp_dir().join(format!("jarvis-approval-race-{}", std::process::id()));
     let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
     create_task(&mut store);
+    store.initialize_tool_budget(10).unwrap();
     store
         .issue_tool_approval(
             "one",
@@ -238,6 +246,7 @@ fn expired_and_mismatched_approvals_never_execute() {
     let path = std::env::temp_dir().join(format!("jarvis-approval-expiry-{}", std::process::id()));
     let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
     create_task(&mut store);
+    store.initialize_tool_budget(10).unwrap();
     store
         .issue_tool_approval(
             "expired",
@@ -288,6 +297,7 @@ fn approval_rejects_oversized_arguments() {
     let path = std::env::temp_dir().join(format!("jarvis-approval-size-{}", std::process::id()));
     let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
     create_task(&mut store);
+    store.initialize_tool_budget(10).unwrap();
     let mut oversized = request();
     oversized.arguments = json!({"text": "x".repeat(1025)});
     assert!(store
@@ -310,6 +320,7 @@ fn approval_cannot_be_issued_for_missing_or_stale_task() {
         .issue_tool_approval("missing", "task", 1, &request(), expiry)
         .is_err());
     create_task(&mut store);
+    store.initialize_tool_budget(10).unwrap();
     assert!(store
         .issue_tool_approval("stale", "task", 2, &request(), expiry)
         .is_err());
@@ -326,6 +337,7 @@ fn backup_does_not_revive_pending_approval() {
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
     let mut store = jarvis::storage::SqliteStore::create(&root.join("workspace")).unwrap();
     create_task(&mut store);
+    store.initialize_tool_budget(10).unwrap();
     store
         .issue_tool_approval(
             "one",
@@ -350,6 +362,7 @@ fn approval_rejected_after_task_revision_changes() {
     let path = std::env::temp_dir().join(format!("jarvis-approval-stale-{}", std::process::id()));
     let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
     create_task(&mut store);
+    store.initialize_tool_budget(10).unwrap();
     store
         .issue_tool_approval(
             "one",
@@ -390,6 +403,7 @@ fn audit_write_failure_prevents_execution_and_preserves_approval() {
             &[],
         )
         .unwrap();
+    store.initialize_tool_budget(10).unwrap();
     store
         .issue_tool_approval(
             "one",
@@ -412,11 +426,46 @@ fn audit_write_failure_prevents_execution_and_preserves_approval() {
         )
         .unwrap();
     assert_eq!(consumed, 0);
+    let used: i64 = db.query_row("SELECT used FROM tool_budget", [], |r| r.get(0)).unwrap();
+    assert_eq!(used, 0);
 }
 
 #[test]
 fn approved_call_without_trusted_budget_is_denied() {
-    let mut broker = approved(contract(), request());
+    let mut broker = approved_with_limit(contract(), request(), false);
     assert_eq!(broker.call(&request()), Err(BrokerError::Denied));
     assert_eq!(broker.executions(), 0);
+}
+
+#[test]
+fn budget_is_shared_durable_and_atomic_with_approval_and_audit() {
+    use std::sync::{Arc, Barrier};
+    let path = std::env::temp_dir().join(format!("jarvis-tool-budget-{}", std::process::id()));
+    let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
+    create_task(&mut store);
+    store.initialize_tool_budget(1).unwrap();
+    assert!(store.initialize_tool_budget(100).is_err());
+    for id in ["one", "two"] {
+        store.issue_tool_approval(id, "task", 1, &request(), SystemTime::now() + Duration::from_secs(60)).unwrap();
+    }
+    drop(store);
+    let stores: Vec<_> = (0..2).map(|_| jarvis::storage::SqliteStore::open(&path).unwrap()).collect();
+    let barrier = Arc::new(Barrier::new(2));
+    let threads: Vec<_> = stores.into_iter().zip(["one", "two"]).map(|(store, id)| {
+        let barrier = barrier.clone();
+        std::thread::spawn(move || {
+            let mut broker = Broker::with_approval(contract(), store, id.into(), "task".into(), 1);
+            barrier.wait();
+            broker.call(&request()).is_ok()
+        })
+    }).collect();
+    assert_eq!(threads.into_iter().map(|t| t.join().unwrap()).filter(|ok| *ok).count(), 1);
+    let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
+    let (used, consumed, intents): (i64, i64, i64) = db.query_row(
+        "SELECT (SELECT used FROM tool_budget), (SELECT sum(consumed) FROM tool_approvals), (SELECT count(*) FROM events WHERE event LIKE '%tool_execution_intent%')", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+    assert_eq!((used, consumed, intents), (1, 1, 1));
+    let loser: String = db.query_row("SELECT id FROM tool_approvals WHERE consumed = 0", [], |r| r.get(0)).unwrap();
+    let store = jarvis::storage::SqliteStore::open(&path).unwrap();
+    let mut broker = Broker::with_approval(contract(), store, loser, "task".into(), 1);
+    assert_eq!(broker.call(&request()), Err(BrokerError::Denied));
 }

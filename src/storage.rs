@@ -70,6 +70,9 @@ fn validate_schema(db: &Connection, version: i64) -> Result<(), StorageError> {
     if version >= 8 {
         expected.execute_batch("CREATE TABLE tool_approvals (id TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL, revision INTEGER NOT NULL, request TEXT NOT NULL, expires INTEGER NOT NULL, consumed INTEGER NOT NULL DEFAULT 0 CHECK(consumed IN (0, 1)));")?;
     }
+    if version >= 9 {
+        expected.execute_batch("CREATE TABLE tool_budget (id INTEGER PRIMARY KEY CHECK(id = 1), call_limit INTEGER NOT NULL CHECK(call_limit >= 0), used INTEGER NOT NULL DEFAULT 0 CHECK(used >= 0 AND used <= call_limit));")?;
+    }
     fn definitions(db: &Connection) -> Result<Vec<(String, String)>, StorageError> {
         let mut query = db.prepare(
             "SELECT name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name",
@@ -139,7 +142,7 @@ impl SqliteStore {
         db.execute_batch("PRAGMA foreign_keys = ON;")?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if !(0..=8).contains(&version) {
+        if !(0..=9).contains(&version) {
             return Err(StorageError::UnsupportedSchema);
         }
         if version > 0 {
@@ -189,6 +192,9 @@ impl SqliteStore {
         if version < 8 {
             tx.execute_batch("CREATE TABLE tool_approvals (id TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL, revision INTEGER NOT NULL, request TEXT NOT NULL, expires INTEGER NOT NULL, consumed INTEGER NOT NULL DEFAULT 0 CHECK(consumed IN (0, 1))); PRAGMA user_version = 8;")?;
         }
+        if version < 9 {
+            tx.execute_batch("CREATE TABLE tool_budget (id INTEGER PRIMARY KEY CHECK(id = 1), call_limit INTEGER NOT NULL CHECK(call_limit >= 0), used INTEGER NOT NULL DEFAULT 0 CHECK(used >= 0 AND used <= call_limit)); PRAGMA user_version = 9;")?;
+        }
         tx.commit()?;
         Ok(Self { db })
     }
@@ -228,6 +234,16 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Trusted owner establishes a workspace-wide immutable call limit once.
+    pub fn initialize_tool_budget(&mut self, limit: u64) -> Result<(), StorageError> {
+        let limit = i64::try_from(limit).map_err(|_| StorageError::OperationFailed)?;
+        self.db.execute(
+            "INSERT INTO tool_budget (id, call_limit) VALUES (1, ?1)",
+            [limit],
+        )?;
+        Ok(())
+    }
+
     pub(crate) fn consume_tool_approval(
         &mut self,
         id: &str,
@@ -252,6 +268,14 @@ impl SqliteStore {
         }
         let changed = tx.execute("UPDATE tool_approvals SET consumed = 1 WHERE id = ?1 AND task_id = ?2 AND revision = ?3 AND request = ?4 AND expires > ?5 AND consumed = 0 AND EXISTS (SELECT 1 FROM tasks WHERE id = ?2 AND version = ?3)", params![id, task, revision, request, now])?;
         if changed != 1 {
+            return Ok(false);
+        }
+        // A backup marker blocks admission until omitted work is reconciled.
+        let reserved = tx.execute(
+            "UPDATE tool_budget SET used = used + 1 WHERE id = 1 AND used < call_limit AND NOT EXISTS (SELECT 1 FROM inference_budget WHERE id = -1 AND pending = 1)",
+            [],
+        )?;
+        if reserved != 1 {
             return Ok(false);
         }
         let event =

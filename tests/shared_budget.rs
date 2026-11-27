@@ -303,7 +303,7 @@ fn legacy_reservations_migrate_as_unresolved_without_losing_charges() {
     let _ = fs::remove_dir_all(&root);
     drop(SqliteStore::create(&root).unwrap());
     let db = rusqlite::Connection::open(root.join("jarvis.sqlite3")).unwrap();
-    db.execute_batch("DROP TABLE tool_approvals; ALTER TABLE inference_budget DROP COLUMN pending; INSERT INTO inference_budget (id, tokens) VALUES (1, 15), (2, 20); INSERT INTO inference_budget_limit VALUES (1, 100); PRAGMA user_version = 6;").unwrap();
+    db.execute_batch("DROP TABLE tool_budget; DROP TABLE tool_approvals; ALTER TABLE inference_budget DROP COLUMN pending; INSERT INTO inference_budget (id, tokens) VALUES (1, 15), (2, 20); INSERT INTO inference_budget_limit VALUES (1, 100); PRAGMA user_version = 6;").unwrap();
     drop(db);
     let mut store = SqliteStore::open(&root).unwrap();
     assert!(store.reserve_tokens(100, 1).unwrap().is_none());
