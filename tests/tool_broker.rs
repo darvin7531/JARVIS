@@ -588,11 +588,22 @@ fn budget_is_shared_durable_and_atomic_with_approval_and_audit() {
 
 #[test]
 fn contract_expiring_during_intent_commit_never_dispatches() {
-    let path = std::env::temp_dir().join(format!("jarvis-tool-dispatch-expiry-{}", std::process::id()));
+    let path = std::env::temp_dir().join(format!(
+        "jarvis-tool-dispatch-expiry-{}",
+        std::process::id()
+    ));
     let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
     create_task(&mut store);
     store.initialize_tool_budget(1).unwrap();
-    store.issue_tool_approval("one", "task", 1, &request(), SystemTime::now() + Duration::from_secs(60)).unwrap();
+    store
+        .issue_tool_approval(
+            "one",
+            "task",
+            1,
+            &request(),
+            SystemTime::now() + Duration::from_secs(60),
+        )
+        .unwrap();
     let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
     db.execute_batch("CREATE TRIGGER slow_intent BEFORE INSERT ON events BEGIN SELECT sum(x) FROM (WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<3000000) SELECT x FROM n); END;").unwrap();
     let mut short = contract();

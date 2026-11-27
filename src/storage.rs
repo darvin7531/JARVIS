@@ -300,6 +300,21 @@ impl SqliteStore {
         Ok(true)
     }
 
+    pub(crate) fn tool_approval_is_fresh(&self, id: &str) -> Result<bool, StorageError> {
+        let now = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| StorageError::OperationFailed)?
+                .as_secs(),
+        )
+        .map_err(|_| StorageError::OperationFailed)?;
+        Ok(self.db.query_row(
+            "SELECT expires > ?2 FROM tool_approvals WHERE id = ?1 AND consumed = 1",
+            params![id, now],
+            |row| row.get(0),
+        )?)
+    }
+
     pub(crate) fn record_tool_outcome(
         &mut self,
         id: &str,

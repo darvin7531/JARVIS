@@ -131,6 +131,13 @@ impl Broker {
         {
             return Err(BrokerError::Denied);
         }
+        // A consumed approval remains pending on a failed freshness check; the
+        // owner must reconcile the durable intent before any further call.
+        if !store.tool_approval_is_fresh(id).unwrap_or(false)
+            || SystemTime::now() >= contract.expires_at
+        {
+            return Err(BrokerError::Denied);
+        }
         self.executions += 1;
         let result = text.to_owned();
         store
