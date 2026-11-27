@@ -216,3 +216,52 @@ fn approval_race_and_identity_are_enforced() {
         1
     );
 }
+
+#[test]
+fn expired_and_mismatched_approvals_never_execute() {
+    let path = std::env::temp_dir().join(format!("jarvis-approval-expiry-{}", std::process::id()));
+    let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
+    store
+        .issue_tool_approval(
+            "expired",
+            "task",
+            1,
+            &request(),
+            SystemTime::now() - Duration::from_secs(2),
+        )
+        .unwrap();
+    store
+        .issue_tool_approval(
+            "exact",
+            "task",
+            1,
+            &request(),
+            SystemTime::now() + Duration::from_secs(60),
+        )
+        .unwrap();
+    assert!(store
+        .issue_tool_approval(
+            "exact",
+            "task",
+            1,
+            &request(),
+            SystemTime::now() + Duration::from_secs(60)
+        )
+        .is_err());
+    let mut broker = Broker::with_approval(contract(), store, "expired".into(), "task".into(), 1);
+    assert_eq!(broker.call(&request()), Err(BrokerError::Denied));
+    assert_eq!(broker.executions(), 0);
+    drop(broker);
+    let store = jarvis::storage::SqliteStore::open(&path).unwrap();
+    let mut altered = contract();
+    altered.permitted_text = "different".into();
+    let mut broker = Broker::with_approval(altered, store, "exact".into(), "task".into(), 1);
+    let mut different = request();
+    different.arguments = json!({"text":"different"});
+    assert_eq!(broker.call(&different), Err(BrokerError::Denied));
+    assert_eq!(broker.executions(), 0);
+    drop(broker);
+    let store = jarvis::storage::SqliteStore::open(&path).unwrap();
+    let mut broker = Broker::with_approval(contract(), store, "exact".into(), "task".into(), 1);
+    assert_eq!(broker.call(&request()), Ok("hello".into()));
+}
