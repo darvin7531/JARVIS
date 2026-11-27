@@ -244,3 +244,22 @@ fn competing_first_limits_cannot_both_succeed() {
     );
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn failed_settlement_blocks_later_requests_after_writer_unlocks() {
+    use jarvis::storage::SqliteStore;
+    let root = std::env::temp_dir().join(format!("jarvis-settle-lock-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let mut store = SqliteStore::create(&root).unwrap();
+    let id = store.reserve_tokens(100, 15).unwrap().unwrap();
+    let lock = rusqlite::Connection::open(root.join("jarvis.sqlite3")).unwrap();
+    lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+    assert!(store.settle_tokens(id, 120).is_err());
+    lock.execute_batch("ROLLBACK").unwrap();
+    drop(store);
+    let mut reopened = SqliteStore::open(&root).unwrap();
+    assert!(reopened.reserve_tokens(100, 15).unwrap().is_none());
+    drop(reopened);
+    drop(lock);
+    fs::remove_dir_all(root).unwrap();
+}
