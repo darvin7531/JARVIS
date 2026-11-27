@@ -25,12 +25,25 @@ pub enum Tier {
 /// Rules are lexical hints, not a semantic complexity assessment.
 /// ponytail: a small keyword list misses synonyms; extend it from observed tasks.
 pub fn classify(prompt: &str) -> Tier {
+    if prompt == "ping" {
+        return Tier::T0;
+    }
     let prompt = prompt.trim_start();
-    let heavy = prompt.split(|c: char| !c.is_alphanumeric()).any(|word| {
-        ["architecture", "incident", "critical"]
+    let heavy = prompt
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|word| {
+            [
+                "architecture",
+                "incident",
+                "critical",
+                "архитектур",
+                "инцидент",
+                "критическ",
+            ]
             .iter()
-            .any(|hint| word.eq_ignore_ascii_case(hint))
-    });
+            .any(|hint| word.starts_with(hint))
+        });
     if prompt.starts_with("complex:") || heavy {
         Tier::T3
     } else if prompt.starts_with("code:") {
