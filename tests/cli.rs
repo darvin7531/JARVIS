@@ -59,6 +59,31 @@ fn event(receiver: &mpsc::Receiver<String>, name: &str) {
 }
 
 #[test]
+fn closed_stdout_reports_failure_on_shutdown() {
+    let mut child = Process(
+        Command::new(env!("CARGO_BIN_EXE_jarvis"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut stdout = BufReader::new(child.0.stdout.take().unwrap());
+    let mut started = String::new();
+    stdout.read_line(&mut started).unwrap();
+    assert_eq!(started, "{\"event\":\"started\"}\n");
+    drop(stdout);
+    child.0.stdin.take().unwrap().write_all(b"\n").unwrap();
+    assert!(
+        !wait(&mut child).success(),
+        "closed stdout was reported as success"
+    );
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(&mut child.0.stderr.take().unwrap(), &mut stderr).unwrap();
+    assert_eq!(stderr, "{\"error\":\"output_failed\"}\n");
+}
+
+#[test]
 fn newline_stops_service() {
     let (mut child, output) = spawn(None, Stdio::piped());
     event(&output, "started");
@@ -131,5 +156,100 @@ fn config_at_size_limit_is_accepted() {
     child.0.stdin.take().unwrap().write_all(b"\n").unwrap();
     assert!(wait(&mut child).success());
     event(&output, "stopped");
+    std::fs::remove_file(path).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn fifo_config_is_rejected_without_waiting_for_writer() {
+    let path = std::env::temp_dir().join(format!("jarvis-fifo-{}", std::process::id()));
+    assert!(Command::new("mkfifo")
+        .arg(&path)
+        .status()
+        .unwrap()
+        .success());
+    let mut child = Process(
+        Command::new(env!("CARGO_BIN_EXE_jarvis"))
+            .arg("--config")
+            .arg(&path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    assert!(!wait(&mut child).success());
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(&mut child.0.stderr.take().unwrap(), &mut stderr).unwrap();
+    assert_eq!(stderr, "{\"error\":\"invalid_config\"}\n");
+    std::fs::remove_file(path).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn sigterm_exits_with_full_stdout_pipe() {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let mut fds = [0; 2];
+    assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+    let _reader = unsafe { std::fs::File::from_raw_fd(fds[0]) };
+    let mut writer = unsafe { std::fs::File::from_raw_fd(fds[1]) };
+    let flags = unsafe { libc::fcntl(writer.as_raw_fd(), libc::F_GETFL) };
+    assert_eq!(
+        unsafe { libc::fcntl(writer.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) },
+        0
+    );
+    loop {
+        match writer.write(&[0; 4096]) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(e) => panic!("pipe fill failed: {e}"),
+        }
+    }
+    assert_eq!(
+        unsafe { libc::fcntl(writer.as_raw_fd(), libc::F_SETFL, flags) },
+        0
+    );
+    let mut child = Process(
+        Command::new(env!("CARGO_BIN_EXE_jarvis"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(writer))
+            .spawn()
+            .unwrap(),
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(child.0.try_wait().unwrap().is_none());
+    assert!(Command::new("/bin/kill")
+        .args(["-TERM", &child.0.id().to_string()])
+        .status()
+        .unwrap()
+        .success());
+    assert!(wait(&mut child).success());
+}
+
+#[cfg(unix)]
+#[test]
+fn chat_fifo_config_is_rejected_without_waiting_for_writer() {
+    let path = std::env::temp_dir().join(format!("jarvis-chat-fifo-{}", std::process::id()));
+    assert!(Command::new("mkfifo")
+        .arg(&path)
+        .status()
+        .unwrap()
+        .success());
+    let mut child = Process(
+        Command::new(env!("CARGO_BIN_EXE_jarvis"))
+            .arg("chat")
+            .arg("--config")
+            .arg(&path)
+            .arg("hello")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    assert!(!wait(&mut child).success());
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(&mut child.0.stderr.take().unwrap(), &mut stderr).unwrap();
+    assert_eq!(stderr, "{\"error\":\"invalid_config\"}\n");
     std::fs::remove_file(path).unwrap();
 }

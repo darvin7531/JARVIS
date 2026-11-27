@@ -17,8 +17,29 @@ fn request() -> Request<'static> {
         prompt: "private prompt",
         max_tokens: 8,
         max_output_bytes: 64,
-        timeout: Duration::from_secs(2),
+        deadline: std::time::Instant::now() + Duration::from_secs(2),
     }
+}
+#[test]
+fn deadline_elapsing_before_dispatch_never_connects() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let mut r = request();
+    r.deadline = std::time::Instant::now() + Duration::from_millis(100);
+    thread::sleep(Duration::from_millis(200));
+    assert_eq!(
+        Ollama {
+            port: listener.local_addr().unwrap().port(),
+            trusted_no_truncation: true
+        }
+        .generate(
+            &r,
+            &std::sync::Arc::new(AtomicBool::new(false)),
+            &mut |_| {}
+        ),
+        Err(Error::Timeout)
+    );
+    assert!(listener.accept().is_err(), "expired request connected");
 }
 fn serve(body: &'static str, delay: Duration) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -52,9 +73,11 @@ fn fragmented_ndjson_and_usage() {
         port,
         trusted_no_truncation: true,
     }
-    .generate(&request(), &AtomicBool::new(false), &mut |s| {
-        text.push_str(s)
-    })
+    .generate(
+        &request(),
+        &std::sync::Arc::new(AtomicBool::new(false)),
+        &mut |s| text.push_str(s),
+    )
     .unwrap();
     assert_eq!(text, "Hi!");
     assert_eq!((usage.input_tokens, usage.output_tokens), (2, 3));
@@ -70,7 +93,11 @@ fn truncated_budget_timeout_cancel_and_redacted_errors() {
         port,
         trusted_no_truncation: true,
     }
-    .generate(&request(), &AtomicBool::new(false), &mut emit)
+    .generate(
+        &request(),
+        &std::sync::Arc::new(AtomicBool::new(false)),
+        &mut emit,
+    )
     .unwrap_err();
     assert_eq!(err, Error::Truncated);
     assert!(!format!("{err:?}").contains("private prompt"));
@@ -82,18 +109,18 @@ fn truncated_budget_timeout_cancel_and_redacted_errors() {
             port,
             trusted_no_truncation: true
         }
-        .generate(&r, &AtomicBool::new(false), &mut emit),
+        .generate(&r, &std::sync::Arc::new(AtomicBool::new(false)), &mut emit),
         Err(Error::Budget)
     );
     let port = serve("", Duration::from_secs(1));
     let mut r = request();
-    r.timeout = Duration::from_millis(80);
+    r.deadline = std::time::Instant::now() + Duration::from_millis(80);
     assert_eq!(
         Ollama {
             port,
             trusted_no_truncation: true
         }
-        .generate(&r, &AtomicBool::new(false), &mut emit),
+        .generate(&r, &std::sync::Arc::new(AtomicBool::new(false)), &mut emit),
         Err(Error::Timeout)
     );
     assert_eq!(
@@ -101,11 +128,11 @@ fn truncated_budget_timeout_cancel_and_redacted_errors() {
             port,
             trusted_no_truncation: true
         }
-        .generate(&r, &AtomicBool::new(true), &mut emit),
+        .generate(&r, &std::sync::Arc::new(AtomicBool::new(true)), &mut emit),
         Err(Error::Cancelled)
     );
     let port = serve("", Duration::from_secs(1));
-    let cancel = AtomicBool::new(false);
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
     thread::scope(|scope| {
         scope.spawn(|| {
             thread::sleep(Duration::from_millis(80));
@@ -122,23 +149,23 @@ fn truncated_budget_timeout_cancel_and_redacted_errors() {
     });
 }
 #[test]
+#[ignore = "requires a running Ollama server with the pinned smoke model"]
 fn actual_ollama_smoke_when_enabled() {
-    if std::env::var_os("JARVIS_OLLAMA_SMOKE").is_none() {
-        return;
-    }
     let r = Request {
         model: "smollm2:135m-instruct-q4_0",
         prompt: "Say hello in one word.",
         max_tokens: 16,
         max_output_bytes: 4096,
-        timeout: Duration::from_secs(120),
+        deadline: std::time::Instant::now() + Duration::from_secs(120),
     };
     let mut text = String::new();
     let usage = Ollama {
         port: 11434,
         trusted_no_truncation: true,
     }
-    .generate(&r, &AtomicBool::new(false), &mut |s| text.push_str(s))
+    .generate(&r, &std::sync::Arc::new(AtomicBool::new(false)), &mut |s| {
+        text.push_str(s)
+    })
     .unwrap();
     assert!(!text.trim().is_empty());
     assert!(usage.input_tokens > 0 && usage.output_tokens > 0 && usage.output_tokens <= 16);
@@ -155,9 +182,11 @@ fn terminal_text_is_not_emitted_when_usage_is_invalid() {
         port,
         trusted_no_truncation: true,
     }
-    .generate(&request(), &AtomicBool::new(false), &mut |s| {
-        text.push_str(s)
-    });
+    .generate(
+        &request(),
+        &std::sync::Arc::new(AtomicBool::new(false)),
+        &mut |s| text.push_str(s),
+    );
     assert!(result.is_err());
     assert!(text.is_empty(), "invalid terminal text was emitted");
 }
@@ -181,9 +210,11 @@ fn callback_panic_closes_transport() {
             port,
             trusted_no_truncation: true,
         }
-        .generate(&request(), &AtomicBool::new(false), &mut |_| {
-            panic!("callback")
-        });
+        .generate(
+            &request(),
+            &std::sync::Arc::new(AtomicBool::new(false)),
+            &mut |_| panic!("callback"),
+        );
     });
     assert!(result.is_err());
     assert!(
@@ -214,7 +245,11 @@ fn incomplete_http_body_is_transport_error_even_after_done() {
             port,
             trusted_no_truncation: true
         }
-        .generate(&request(), &AtomicBool::new(false), &mut |_| {}),
+        .generate(
+            &request(),
+            &std::sync::Arc::new(AtomicBool::new(false)),
+            &mut |_| {}
+        ),
         Err(Error::Transport)
     );
 }
@@ -230,9 +265,11 @@ fn missing_usage_rejects_completion_after_provisional_chunk() {
         port,
         trusted_no_truncation: true,
     }
-    .generate(&request(), &AtomicBool::new(false), &mut |s| {
-        text.push_str(s)
-    });
+    .generate(
+        &request(),
+        &std::sync::Arc::new(AtomicBool::new(false)),
+        &mut |s| text.push_str(s),
+    );
     assert_eq!(result, Err(Error::InvalidStream));
     assert_eq!(text, "first");
 }
@@ -288,9 +325,11 @@ fn sends_requested_token_limit_and_handles_fragmented_unicode() {
         port,
         trusted_no_truncation: true,
     }
-    .generate(&request(), &AtomicBool::new(false), &mut |s| {
-        text.push_str(s)
-    })
+    .generate(
+        &request(),
+        &std::sync::Arc::new(AtomicBool::new(false)),
+        &mut |s| text.push_str(s),
+    )
     .unwrap();
     server.join().unwrap();
     assert_eq!(text, "é");
@@ -307,9 +346,11 @@ fn length_finish_is_incomplete_and_preserves_usage() {
         port,
         trusted_no_truncation: true,
     }
-    .generate(&request(), &AtomicBool::new(false), &mut |s| {
-        text.push_str(s)
-    });
+    .generate(
+        &request(),
+        &std::sync::Arc::new(AtomicBool::new(false)),
+        &mut |s| text.push_str(s),
+    );
     assert_eq!(text, "partial");
     let error = result.expect_err("length must not be reported as complete");
     let debug = format!("{error:?}");
@@ -337,8 +378,11 @@ fn terminal_finish_reason_must_be_recognized() {
                 port,
                 trusted_no_truncation: true
             }
-            .generate(&request(), &AtomicBool::new(false), &mut |s| text
-                .push_str(s)),
+            .generate(
+                &request(),
+                &std::sync::Arc::new(AtomicBool::new(false)),
+                &mut |s| text.push_str(s)
+            ),
             Err(Error::InvalidStream)
         );
         assert!(text.is_empty());
@@ -351,6 +395,10 @@ fn untrusted_runtime_is_rejected_before_connecting() {
         port: 1,
         trusted_no_truncation: false,
     }
-    .generate(&request(), &AtomicBool::new(false), &mut |_| {});
+    .generate(
+        &request(),
+        &std::sync::Arc::new(AtomicBool::new(false)),
+        &mut |_| {},
+    );
     assert_eq!(result, Err(Error::InvalidRequest));
 }
