@@ -819,13 +819,7 @@ fn closed_runtime_denies_unused_approvals_without_charging() {
     }
     assert!(store.agent_step("task", 1, 2, 2).unwrap());
     write.arguments = json!({"text": "hello"});
-    let mut broker = Broker::with_approval(
-        write_contract,
-        store,
-        "used".into(),
-        "task".into(),
-        1,
-    );
+    let mut broker = Broker::with_approval(write_contract, store, "used".into(), "task".into(), 1);
     assert_eq!(broker.call(&write), Ok("hello".into()));
     drop(broker);
     let mut store = jarvis::storage::SqliteStore::open(&path).unwrap();
@@ -845,14 +839,19 @@ fn closed_runtime_denies_unused_approvals_without_charging() {
     write_contract.action = "write".into();
     write_contract.scopes = vec![Scope::Write];
     write_contract.permitted_text = "changed".into();
-    let mut broker = Broker::with_approval(write_contract, store, "unused".into(), "task".into(), 1);
+    let mut broker =
+        Broker::with_approval(write_contract, store, "unused".into(), "task".into(), 1);
     assert_eq!(broker.call(&write), Err(BrokerError::Denied));
     assert_eq!(broker.executions(), 0);
     let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
     let state: (i64, i64, i64, i64) = db.query_row("SELECT (SELECT consumed FROM tool_approvals WHERE id='used'), (SELECT consumed FROM tool_approvals WHERE id='unused'), (SELECT used FROM tool_budget), (SELECT count(*) FROM tool_executions)", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
     assert_eq!(state, (1, 0, 1, 1));
     let value: String = db
-        .query_row("SELECT value FROM mock_state WHERE resource = 'task/item'", [], |r| r.get(0))
+        .query_row(
+            "SELECT value FROM mock_state WHERE resource = 'task/item'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(value, "hello");
     drop(db);
