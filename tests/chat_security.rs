@@ -229,7 +229,7 @@ fn inherited_stdout_flags_remain_unchanged() {
         thread::sleep(Duration::from_secs(2));
     });
     let mut fds = [0; 2];
-    assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+    assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
     let _reader = unsafe { fs::File::from_raw_fd(fds[0]) };
     let writer = unsafe { fs::File::from_raw_fd(fds[1]) };
     let fd = writer.as_raw_fd();
@@ -386,7 +386,7 @@ fn stdout_pipe_without_reader_fails() {
     use std::os::fd::FromRawFd;
     let path = config(1, 2, "no-reader");
     let mut fds = [0; 2];
-    assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+    assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
     unsafe {
         libc::close(fds[0]);
     }
@@ -398,6 +398,10 @@ fn stdout_pipe_without_reader_fails() {
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("output_failed"));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("output_failed"),
+        "{:?}",
+        output
+    );
     fs::remove_file(path).unwrap();
 }
