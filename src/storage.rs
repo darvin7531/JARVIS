@@ -654,7 +654,7 @@ impl SqliteStore {
             .db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute("INSERT OR IGNORE INTO agent_runtime (task_id, revision, max_steps, max_failures, steps, failures, pending, terminal) SELECT id, version, ?3, ?4, 0, 0, 0, 0 FROM tasks WHERE id = ?1 AND version = ?2 AND NOT EXISTS (SELECT 1 FROM events WHERE task_id = ?1 AND revision = ?2 AND event LIKE '%checkpoint%')", params![task, revision, steps, failures])?;
-        let changed = tx.execute("UPDATE agent_runtime SET steps = steps + 1, pending = 1 WHERE task_id = ?1 AND revision = ?2 AND max_steps = ?3 AND max_failures = ?4 AND steps < max_steps AND failures < max_failures AND pending = 0 AND terminal = 0 AND EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND version = ?2)", params![task, revision, steps, failures])?;
+        let changed = tx.execute("UPDATE agent_runtime SET steps = steps + 1, pending = 1 WHERE task_id = ?1 AND revision = ?2 AND max_steps = ?3 AND max_failures = ?4 AND steps < max_steps AND failures < max_failures AND pending = 0 AND terminal = 0 AND closed = 0 AND EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND version = ?2)", params![task, revision, steps, failures])?;
         if changed == 1 {
             tx.execute("INSERT INTO events (task_id, event, revision, occurred_at) VALUES (?1, '{\"type\":\"checkpoint\",\"status\":\"thinking\"}', ?2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))", params![task, revision])?;
         }
