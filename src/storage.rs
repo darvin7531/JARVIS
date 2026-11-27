@@ -614,10 +614,8 @@ impl SqliteStore {
             .checked_sub(1)
             .ok_or(StorageError::OperationFailed)?;
         let tx = self.db.transaction()?;
-        // ponytail: revisions remain locked after agent admission; add trusted
-        // reconciliation before permitting a new revision of that task.
         let changed = tx.execute(
-            "UPDATE tasks SET version = ?1, title = ?2 WHERE id = ?3 AND version = ?4 AND NOT EXISTS (SELECT 1 FROM tool_executions e JOIN tool_approvals a ON a.id = e.approval_id WHERE e.pending = 1 AND a.task_id = ?3) AND NOT EXISTS (SELECT 1 FROM agent_runtime WHERE task_id = ?3)",
+            "UPDATE tasks SET version = ?1, title = ?2 WHERE id = ?3 AND version = ?4 AND NOT EXISTS (SELECT 1 FROM tool_executions e JOIN tool_approvals a ON a.id = e.approval_id WHERE e.pending = 1 AND a.task_id = ?3) AND NOT EXISTS (SELECT 1 FROM agent_runtime WHERE task_id = ?3 AND closed = 0)",
             params![task.version, task.title, task.id, previous],
         )?;
         if changed != 1 {
