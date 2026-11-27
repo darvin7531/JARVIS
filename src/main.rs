@@ -1,3 +1,5 @@
+mod chat;
+
 use jarvis::{Event, Lifecycle};
 use serde::Deserialize;
 use signal_hook::{
@@ -26,6 +28,7 @@ enum Error {
     CapabilityUnavailable,
     DataNotAllowed,
     SignalSetupFailed,
+    Chat(&'static str),
 }
 
 impl Error {
@@ -37,6 +40,7 @@ impl Error {
             Self::CapabilityUnavailable => "capability_unavailable",
             Self::DataNotAllowed => "data_not_allowed",
             Self::SignalSetupFailed => "signal_setup_failed",
+            Self::Chat(code) => code,
         }
     }
 }
@@ -46,6 +50,9 @@ fn run() -> Result<(), Error> {
     if args.peek().is_some_and(|arg| arg == "chat") {
         args.next();
         let backend = args.next().ok_or(Error::InvalidArguments)?;
+        if backend == "--config" {
+            return chat::run(args).map_err(Error::Chat);
+        }
         if backend == "--openai" {
             if args.next().is_none_or(|arg| arg != "--model")
                 || args.next().is_none()
