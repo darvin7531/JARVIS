@@ -213,7 +213,10 @@ impl SqliteStore {
             return Err(StorageError::OperationFailed);
         }
         let request = serde_json::to_string(request).map_err(|_| StorageError::OperationFailed)?;
-        self.db.execute("INSERT INTO tool_approvals (id, task_id, revision, request, expires) VALUES (?1, ?2, ?3, ?4, ?5)", params![id, task, revision, request, expires])?;
+        let changed = self.db.execute("INSERT INTO tool_approvals (id, task_id, revision, request, expires) SELECT ?1, id, version, ?4, ?5 FROM tasks WHERE id = ?2 AND version = ?3", params![id, task, revision, request, expires])?;
+        if changed != 1 {
+            return Err(StorageError::OperationFailed);
+        }
         Ok(())
     }
 
