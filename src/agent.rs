@@ -375,20 +375,45 @@ mod tests {
 
     #[test]
     fn verification_uncertainty_survives_checkpoint_store_failure() {
-        let path = std::env::temp_dir().join(format!("agent-read-uncertain-{}", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("agent-read-uncertain-{}", std::process::id()));
         let mut store = SqliteStore::create(&path).unwrap();
-        store.create_task(&Task { id: "task".into(), version: 1, title: "test".into() }, "created", &[]).unwrap();
+        store
+            .create_task(
+                &Task {
+                    id: "task".into(),
+                    version: 1,
+                    title: "test".into(),
+                },
+                "created",
+                &[],
+            )
+            .unwrap();
         store.initialize_tool_budget(4).unwrap();
         let expires = SystemTime::now() + Duration::from_secs(300);
-        let request = |tool: &str, text: &str| ToolRequest { tool: tool.into(), action: tool.into(), resource: "mock/item".into(), data_class: DataClass::Public, arguments: json!({"text":text}) };
-        store.issue_tool_approval("write", "task", 1, &request("write", "value"), expires).unwrap();
-        store.issue_tool_approval("read", "task", 1, &request("read", ""), expires).unwrap();
+        let request = |tool: &str, text: &str| ToolRequest {
+            tool: tool.into(),
+            action: tool.into(),
+            resource: "mock/item".into(),
+            data_class: DataClass::Public,
+            arguments: json!({"text":text}),
+        };
+        store
+            .issue_tool_approval("write", "task", 1, &request("write", "value"), expires)
+            .unwrap();
+        store
+            .issue_tool_approval("read", "task", 1, &request("read", ""), expires)
+            .unwrap();
         drop(store);
         let owner = json!({"store":path, "task":"task", "revision":1, "approval":"write", "read_approval":"read", "resource":"mock/item", "data_class":"public", "permitted_text":"value", "expected":"value", "expires_unix":expires.duration_since(UNIX_EPOCH).unwrap().as_secs(), "context":"test"});
         let owner_path = path.join("owner.json");
         let proposal_path = path.join("proposal.json");
         std::fs::write(&owner_path, owner.to_string()).unwrap();
-        std::fs::write(&proposal_path, serde_json::to_string(&request("write", "value")).unwrap()).unwrap();
+        std::fs::write(
+            &proposal_path,
+            serde_json::to_string(&request("write", "value")).unwrap(),
+        )
+        .unwrap();
         FAIL_VERIFICATION.with(|flag| flag.set(true));
         let result = run_owner(owner_path.as_os_str(), proposal_path.as_os_str());
         FAIL_VERIFICATION.with(|flag| flag.set(false));
