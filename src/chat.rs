@@ -222,13 +222,32 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
     if required != Capability::Text {
         return Err("capability_unavailable");
     }
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe { libc::fstat(1, stat.as_mut_ptr()) } != 0 {
+        return Err("output_failed");
+    }
+    let mode = unsafe { stat.assume_init() }.st_mode & libc::S_IFMT;
+    if mode == libc::S_IFSOCK {
+        return Err("output_failed");
+    }
+    let output = if mode == libc::S_IFIFO {
+        Some(
+            OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open("/proc/self/fd/1")
+                .map_err(|_| "output_failed")?,
+        )
+    } else {
+        None
+    };
+    let fd = output.as_ref().map_or(1, AsRawFd::as_raw_fd);
     let selected_tier = selected_tier.unwrap_or_else(|| jarvis::inference::classify(&prompt));
     if selected_tier == Tier::T0 {
         if manual.is_some() || prompt != "ping" {
             return Err("invalid_arguments");
         }
-        println!("pong");
-        return Ok(());
+        return write_output(fd, b"pong\n", &cancelled, started, timeout);
     }
     let mut caps = Vec::new();
     let mut classes = Vec::new();
@@ -283,59 +302,14 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
         max_output_bytes: config.limits.max_output_bytes,
         timeout: timeout.checked_sub(started.elapsed()).ok_or("timeout")?,
     };
-    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-    if unsafe { libc::fstat(1, stat.as_mut_ptr()) } != 0 {
-        return Err("output_failed");
-    }
-    let mode = unsafe { stat.assume_init() }.st_mode & libc::S_IFMT;
-    if mode == libc::S_IFSOCK {
-        return Err("output_failed");
-    }
-    let output = if mode == libc::S_IFIFO {
-        Some(
-            OpenOptions::new()
-                .write(true)
-                .custom_flags(libc::O_NONBLOCK)
-                .open("/proc/self/fd/1")
-                .map_err(|_| "output_failed")?,
-        )
-    } else {
-        None
-    };
-    let fd = output.as_ref().map_or(1, AsRawFd::as_raw_fd);
     let mut failure = None;
     let usage = Ollama {
         port: config.models[index].port,
     }
     .generate(&req, &cancelled, &mut |text| {
-        let mut bytes = text.as_bytes();
-        while !bytes.is_empty() {
-            if cancelled.load(Ordering::Relaxed) {
-                break;
-            }
-            if started.elapsed() >= timeout {
-                failure = Some("timeout");
-                cancelled.store(true, Ordering::Relaxed);
-                break;
-            }
-            // SAFETY: bytes is valid for the provided length; fd is open stdout.
-            let n = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
-            if n > 0 {
-                bytes = &bytes[n as usize..];
-            } else if n < 0 {
-                let error = std::io::Error::last_os_error();
-                if error.kind() == std::io::ErrorKind::WouldBlock {
-                    std::thread::sleep(Duration::from_millis(10));
-                } else if error.kind() != std::io::ErrorKind::Interrupted {
-                    failure = Some("output_failed");
-                    cancelled.store(true, Ordering::Relaxed);
-                    break;
-                }
-            } else {
-                failure = Some("output_failed");
-                cancelled.store(true, Ordering::Relaxed);
-                break;
-            }
+        if let Err(code) = write_output(fd, text.as_bytes(), &cancelled, started, timeout) {
+            failure = Some(code);
+            cancelled.store(true, Ordering::Relaxed);
         }
     })
     .map_err(|error| {
@@ -370,5 +344,36 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
         "{{\"input_tokens\":{},\"output_tokens\":{}}}",
         usage.input_tokens, usage.output_tokens
     );
+    Ok(())
+}
+
+fn write_output(
+    fd: i32,
+    mut bytes: &[u8],
+    cancelled: &AtomicBool,
+    started: Instant,
+    timeout: Duration,
+) -> Result<(), &'static str> {
+    while !bytes.is_empty() {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("cancelled");
+        }
+        if started.elapsed() >= timeout {
+            return Err("timeout");
+        }
+        let n = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
+        if n > 0 {
+            bytes = &bytes[n as usize..];
+        } else if n < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                std::thread::sleep(Duration::from_millis(10));
+            } else if error.kind() != std::io::ErrorKind::Interrupted {
+                return Err("output_failed");
+            }
+        } else {
+            return Err("output_failed");
+        }
+    }
     Ok(())
 }
