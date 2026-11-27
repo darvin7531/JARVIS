@@ -45,7 +45,7 @@ pub fn route<'a>(
 ) -> Result<&'a ModelProfile<'a>, RouteError> {
     let eligible =
         |model: &&ModelProfile<'_>| manual.map_or(model.tier == tier, |name| model.name == name);
-    if !models.iter().any(eligible) {
+    if !models.iter().any(|model| eligible(&model)) {
         return Err(RouteError::ModelUnavailable);
     }
     if !models
