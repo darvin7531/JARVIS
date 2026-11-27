@@ -242,6 +242,23 @@ fn task_and_audit_writes_work_through_storage_port() {
 }
 
 #[test]
+fn task_revision_cannot_bypass_unreconciled_agent_step() {
+    let dir = std::env::temp_dir().join(format!("jarvis-agent-revision-{}", std::process::id()));
+    let mut store = SqliteStore::create(&dir).unwrap();
+    let task = Task {
+        id: "guarded".into(),
+        version: 1,
+        title: "first".into(),
+    };
+    store.create_task(&task, "created", &[]).unwrap();
+    assert!(store.agent_step("guarded", 1, 1, 1).unwrap());
+    let revised = Task { version: 2, ..task };
+    assert!(store.update_task(&revised, "updated").is_err());
+    store.finish_agent_step("guarded", 1, false, true).unwrap();
+    assert!(store.update_task(&revised, "updated").is_err());
+}
+
+#[test]
 fn updating_task_checks_version_and_records_audit_atomically() {
     let dir = std::env::temp_dir().join(format!("jarvis-revision-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
