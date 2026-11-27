@@ -284,6 +284,24 @@ fn expired_and_mismatched_approvals_never_execute() {
 }
 
 #[test]
+fn approval_rejects_oversized_arguments() {
+    let path = std::env::temp_dir().join(format!("jarvis-approval-size-{}", std::process::id()));
+    let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
+    create_task(&mut store);
+    let mut oversized = request();
+    oversized.arguments = json!({"text": "x".repeat(1025)});
+    assert!(store
+        .issue_tool_approval(
+            "large",
+            "task",
+            1,
+            &oversized,
+            SystemTime::now() + Duration::from_secs(60),
+        )
+        .is_err());
+}
+
+#[test]
 fn approval_cannot_be_issued_for_missing_or_stale_task() {
     let path = std::env::temp_dir().join(format!("jarvis-approval-issue-{}", std::process::id()));
     let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
