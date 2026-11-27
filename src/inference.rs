@@ -22,6 +22,19 @@ pub enum Tier {
     T3,
 }
 
+/// Deterministic opt-in task prefixes. Unknown tasks take the inexpensive tier.
+/// ponytail: prefix rules are deliberately simple; add rules when tasks require them.
+pub fn classify(prompt: &str) -> Tier {
+    let prompt = prompt.trim_start();
+    if prompt.starts_with("complex:") {
+        Tier::T3
+    } else if prompt.starts_with("code:") {
+        Tier::T2
+    } else {
+        Tier::T1
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum RouteError {
     CapabilityUnavailable,
