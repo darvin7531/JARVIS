@@ -174,7 +174,7 @@ fn terminal_overusage_is_retained_for_settlement() {
     }
     .generate_bounded(
         &req,
-        &AtomicBool::new(false),
+        &std::sync::Arc::new(AtomicBool::new(false)),
         &mut |s| text.push_str(s),
         Some(10),
     );

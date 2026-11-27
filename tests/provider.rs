@@ -17,9 +17,11 @@ fn mock_streams_text_and_usage() {
     };
     let mut text = String::new();
     let usage = provider
-        .generate(&request, &AtomicBool::new(false), &mut |chunk| {
-            text.push_str(chunk)
-        })
+        .generate(
+            &request,
+            &std::sync::Arc::new(AtomicBool::new(false)),
+            &mut |chunk| text.push_str(chunk),
+        )
         .unwrap();
     assert_eq!(text, "hello");
     assert_eq!(usage.output_tokens, 1);

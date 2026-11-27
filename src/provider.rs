@@ -4,7 +4,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc,
+        mpsc, Arc,
     },
     thread,
     time::{Duration, Instant},
@@ -39,7 +39,7 @@ pub trait Provider {
     fn generate(
         &self,
         request: &Request<'_>,
-        cancelled: &AtomicBool,
+        cancelled: &Arc<AtomicBool>,
         emit: &mut dyn FnMut(&str),
     ) -> Result<Usage, Error>;
 }
@@ -75,7 +75,7 @@ impl Provider for MockProvider {
     fn generate(
         &self,
         r: &Request<'_>,
-        cancelled: &AtomicBool,
+        cancelled: &Arc<AtomicBool>,
         emit: &mut dyn FnMut(&str),
     ) -> Result<Usage, Error> {
         validate(r, cancelled)?;
@@ -107,7 +107,7 @@ impl Provider for Ollama {
     fn generate(
         &self,
         r: &Request<'_>,
-        cancelled: &AtomicBool,
+        cancelled: &Arc<AtomicBool>,
         emit: &mut dyn FnMut(&str),
     ) -> Result<Usage, Error> {
         self.generate_bounded(r, cancelled, emit, None)
@@ -117,7 +117,7 @@ impl Ollama {
     pub fn generate_bounded(
         &self,
         r: &Request<'_>,
-        cancelled: &AtomicBool,
+        cancelled: &Arc<AtomicBool>,
         emit: &mut dyn FnMut(&str),
         max_input_tokens: Option<u32>,
     ) -> Result<Usage, Error> {
@@ -155,16 +155,28 @@ impl Ollama {
         check_deadline(r, cancelled)?;
         let mut input = child.0.stdin.take().ok_or(Error::Transport)?;
         let deadline = r.deadline;
+        let writer_cancelled = Arc::clone(cancelled);
         thread::spawn(move || {
-            if Instant::now() < deadline {
-                let _ = input.write_all(&payload);
+            let mut remaining = payload.as_slice();
+            while !remaining.is_empty()
+                && !writer_cancelled.load(Ordering::Relaxed)
+                && Instant::now() < deadline
+            {
+                match input.write(remaining) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => remaining = &remaining[n..],
+                }
             }
         });
         let mut output = child.0.stdout.take().ok_or(Error::Transport)?;
         let (tx, rx) = mpsc::sync_channel(2);
+        let reader_cancelled = Arc::clone(cancelled);
         thread::spawn(move || {
             let mut buf = [0u8; 4096];
             loop {
+                if reader_cancelled.load(Ordering::Relaxed) || Instant::now() >= deadline {
+                    break;
+                }
                 match output.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
