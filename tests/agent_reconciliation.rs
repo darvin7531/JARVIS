@@ -51,3 +51,40 @@ fn owner_closes_interrupted_runtime_without_losing_history() {
     drop(store);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn pending_tool_and_failed_audit_prevent_closure() {
+    let dir = std::env::temp_dir().join(format!("jarvis-reconcile-block-{}", std::process::id()));
+    let mut store = SqliteStore::create(&dir).unwrap();
+    let task = Task {
+        id: "agent".into(),
+        version: 1,
+        title: "first".into(),
+    };
+    store.create_task(&task, "created", &[]).unwrap();
+    assert!(store.agent_step("agent", 1, 3, 2).unwrap());
+    let db = rusqlite::Connection::open(dir.join("jarvis.sqlite3")).unwrap();
+    db.execute_batch("INSERT INTO tool_approvals (id, task_id, revision, request, expires, consumed) VALUES ('write', 'agent', 1, '{}', 1, 1); INSERT INTO tool_executions VALUES ('write', 1);").unwrap();
+    assert!(store
+        .reconcile_agent_runtime("agent", 1, ReconciliationOutcome::Unknown, "record")
+        .is_err());
+    db.execute_batch("UPDATE tool_executions SET pending = 0; CREATE TRIGGER reject_agent_audit BEFORE INSERT ON events WHEN NEW.event LIKE '%agent_runtime_reconciliation%' BEGIN SELECT RAISE(ABORT, 'failed'); END;").unwrap();
+    assert!(store
+        .reconcile_agent_runtime("agent", 1, ReconciliationOutcome::Unknown, "record")
+        .is_err());
+    let closed: i64 = db
+        .query_row("SELECT closed FROM agent_runtime", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(closed, 0);
+    db.execute_batch("DROP TRIGGER reject_agent_audit;").unwrap();
+    store
+        .reconcile_agent_runtime("agent", 1, ReconciliationOutcome::Succeeded, "record")
+        .unwrap();
+    let consumed: i64 = db
+        .query_row("SELECT consumed FROM tool_approvals", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(consumed, 1);
+    drop(db);
+    drop(store);
+    std::fs::remove_dir_all(dir).unwrap();
+}
