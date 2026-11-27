@@ -62,6 +62,40 @@ fn owner_approval_is_independent_of_model_and_write_is_verified() {
             .output()
             .unwrap()
     };
+    let mut store = SqliteStore::open(&path).unwrap();
+    store
+        .create_task(
+            &Task {
+                id: "forged-task".into(),
+                version: 1,
+                title: "test".into(),
+            },
+            "created",
+            &[],
+        )
+        .unwrap();
+    store
+        .issue_tool_approval(
+            "forged-write",
+            "forged-task",
+            1,
+            &req("write", "approved"),
+            expires,
+        )
+        .unwrap();
+    drop(store);
+    let mut forged_owner = owner.clone();
+    forged_owner["task"] = json!("forged-task");
+    forged_owner["approval"] = json!("forged-write");
+    std::fs::write(&owner_path, forged_owner.to_string()).unwrap();
+    assert!(!run("forged").status.success());
+    let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
+    let count: i64 = db
+        .query_row("SELECT count(*) FROM mock_state", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 0);
+    drop(db);
+    std::fs::write(&owner_path, owner.to_string()).unwrap();
     let success = run("approved");
     assert!(
         success.status.success(),
