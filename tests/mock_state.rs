@@ -253,7 +253,7 @@ fn legacy_unclassified_values_cannot_be_read_or_overwritten() {
     store.initialize_tool_budget(8).unwrap();
     drop(store);
     let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
-    db.execute_batch("ALTER TABLE mock_state DROP COLUMN data_class; INSERT INTO mock_state VALUES ('mock/item', 'legacy secret'); PRAGMA user_version = 11;").unwrap();
+    db.execute_batch("DROP TABLE agent_runtime; ALTER TABLE mock_state DROP COLUMN data_class; INSERT INTO mock_state VALUES ('mock/item', 'legacy secret'); PRAGMA user_version = 11;").unwrap();
     drop(db);
     for (tool, scope, text) in [
         ("read", Scope::Read, ""),

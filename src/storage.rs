@@ -635,8 +635,16 @@ impl SqliteStore {
     }
 
     // Reserve before inference; a crash leaves pending set and cannot replay work.
-    pub fn agent_step(&mut self, task: &str, revision: i64, steps: u32, failures: u32) -> Result<bool, StorageError> {
-        let tx = self.db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    pub fn agent_step(
+        &mut self,
+        task: &str,
+        revision: i64,
+        steps: u32,
+        failures: u32,
+    ) -> Result<bool, StorageError> {
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute("INSERT OR IGNORE INTO agent_runtime SELECT id, version, ?3, ?4, 0, 0, 0, 0 FROM tasks WHERE id = ?1 AND version = ?2 AND NOT EXISTS (SELECT 1 FROM events WHERE task_id = ?1 AND revision = ?2 AND event LIKE '%checkpoint%')", params![task, revision, steps, failures])?;
         let changed = tx.execute("UPDATE agent_runtime SET steps = steps + 1, pending = 1 WHERE task_id = ?1 AND revision = ?2 AND max_steps = ?3 AND max_failures = ?4 AND steps < max_steps AND failures < max_failures AND pending = 0 AND terminal = 0 AND EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND version = ?2)", params![task, revision, steps, failures])?;
         if changed == 1 {
@@ -646,9 +654,17 @@ impl SqliteStore {
         Ok(changed == 1)
     }
 
-    pub fn finish_agent_step(&mut self, task: &str, revision: i64, failed: bool, terminal: bool) -> Result<(), StorageError> {
+    pub fn finish_agent_step(
+        &mut self,
+        task: &str,
+        revision: i64,
+        failed: bool,
+        terminal: bool,
+    ) -> Result<(), StorageError> {
         let changed = self.db.execute("UPDATE agent_runtime SET failures = failures + ?3, pending = 0, terminal = ?4 WHERE task_id = ?1 AND revision = ?2 AND pending = 1 AND terminal = 0 AND EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND version = ?2)", params![task, revision, failed as i64, terminal as i64])?;
-        if changed != 1 { return Err(StorageError::OperationFailed); }
+        if changed != 1 {
+            return Err(StorageError::OperationFailed);
+        }
         Ok(())
     }
 

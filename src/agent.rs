@@ -91,7 +91,15 @@ pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'stat
             return Err("cancelled");
         }
         let mut store = SqliteStore::open(&owner.store).map_err(|_| "agent_storage")?;
-        if !store.agent_step(&owner.task, owner.revision, owner.max_steps, owner.max_failures).map_err(|_| "agent_storage")? {
+        if !store
+            .agent_step(
+                &owner.task,
+                owner.revision,
+                owner.max_steps,
+                owner.max_failures,
+            )
+            .map_err(|_| "agent_storage")?
+        {
             return Err("agent_steps");
         }
         let text = item.to_string();
@@ -129,7 +137,14 @@ pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'stat
                     })
                     .map_err(|_| ())
             });
-        store.finish_agent_step(&owner.task, owner.revision, parsed.is_err(), matches!(&parsed, Ok(Proposal::Tool { .. }))).map_err(|_| "agent_storage")?;
+        store
+            .finish_agent_step(
+                &owner.task,
+                owner.revision,
+                parsed.is_err(),
+                matches!(&parsed, Ok(Proposal::Tool { .. })),
+            )
+            .map_err(|_| "agent_storage")?;
         match parsed {
             Ok(Proposal::Tool { request }) => {
                 proposal = Some(request);
