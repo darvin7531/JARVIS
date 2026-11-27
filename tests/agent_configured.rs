@@ -15,6 +15,10 @@ fn configured_agent_reaches_shared_config_validation() {
         .arg(path.join("missing.json"))
         .output()
         .unwrap();
-    assert!(String::from_utf8_lossy(&output.stderr).contains("invalid_config"), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("invalid_config"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     std::fs::remove_dir_all(path).unwrap();
 }
