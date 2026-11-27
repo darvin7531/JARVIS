@@ -287,3 +287,23 @@ fn terminal_finish_reason_must_be_recognized() {
         assert!(text.is_empty());
     }
 }
+
+#[test]
+fn unsupported_ollama_is_rejected_before_prompt_is_sent() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = [0; 4096];
+        let n = stream.read(&mut buf).unwrap();
+        let request = String::from_utf8_lossy(&buf[..n]);
+        let was_version = request.starts_with("GET /api/version ");
+        let leaked = request.contains("private prompt");
+        let body = r#"{"version":"0.6.8"}"#;
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        (was_version, leaked)
+    });
+    assert!(Ollama { port }.generate(&request(), &AtomicBool::new(false), &mut |_| {}).is_err());
+    let (was_version, leaked) = server.join().unwrap();
+    assert!(was_version && !leaked, "must check version before sending prompt");
+}
