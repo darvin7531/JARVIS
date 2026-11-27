@@ -440,6 +440,22 @@ fn approved_call_without_trusted_budget_is_denied() {
 }
 
 #[test]
+fn successful_execution_records_a_correlated_outcome_after_intent() {
+    let path = std::env::temp_dir().join(format!("jarvis-tool-outcome-{}", std::process::id()));
+    let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
+    create_task(&mut store);
+    store.initialize_tool_budget(2).unwrap();
+    store.issue_tool_approval("one", "task", 1, &request(), SystemTime::now() + Duration::from_secs(60)).unwrap();
+    let mut broker = Broker::with_approval(contract(), store, "one".into(), "task".into(), 1);
+    assert_eq!(broker.call(&request()), Ok("hello".into()));
+    drop(broker);
+    let store = jarvis::storage::SqliteStore::open(&path).unwrap();
+    let events = store.events("task").unwrap();
+    let values: Vec<Value> = events.iter().filter_map(|event| serde_json::from_str(event).ok()).collect();
+    assert_eq!(values, vec![json!({"type":"tool_execution_intent", "approval_id":"one"}), json!({"type":"tool_execution_outcome", "approval_id":"one", "outcome":"succeeded"})]);
+}
+
+#[test]
 fn budget_is_shared_durable_and_atomic_with_approval_and_audit() {
     use std::sync::{Arc, Barrier};
     let path = std::env::temp_dir().join(format!("jarvis-tool-budget-{}", std::process::id()));
