@@ -96,6 +96,9 @@ fn validate_schema(db: &Connection, version: i64) -> Result<(), StorageError> {
     if version >= 13 {
         expected.execute_batch("CREATE TABLE agent_runtime (task_id TEXT NOT NULL REFERENCES tasks(id), revision INTEGER NOT NULL, max_steps INTEGER NOT NULL, max_failures INTEGER NOT NULL, steps INTEGER NOT NULL, failures INTEGER NOT NULL, pending INTEGER NOT NULL, terminal INTEGER NOT NULL, PRIMARY KEY(task_id, revision));")?;
     }
+    if version >= 14 {
+        expected.execute_batch("ALTER TABLE agent_runtime ADD COLUMN closed INTEGER NOT NULL DEFAULT 0 CHECK(closed IN (0, 1));")?;
+    }
     fn definitions(db: &Connection) -> Result<Vec<(String, String)>, StorageError> {
         let mut query = db.prepare(
             "SELECT name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name",
@@ -172,7 +175,7 @@ impl SqliteStore {
         db.execute_batch("PRAGMA foreign_keys = ON;")?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if !(0..=13).contains(&version) {
+        if !(0..=14).contains(&version) {
             return Err(StorageError::UnsupportedSchema);
         }
         if version > 0 {
@@ -236,6 +239,9 @@ impl SqliteStore {
         }
         if version < 13 {
             tx.execute_batch("CREATE TABLE agent_runtime (task_id TEXT NOT NULL REFERENCES tasks(id), revision INTEGER NOT NULL, max_steps INTEGER NOT NULL, max_failures INTEGER NOT NULL, steps INTEGER NOT NULL, failures INTEGER NOT NULL, pending INTEGER NOT NULL, terminal INTEGER NOT NULL, PRIMARY KEY(task_id, revision)); PRAGMA user_version = 13;")?;
+        }
+        if version < 14 {
+            tx.execute_batch("ALTER TABLE agent_runtime ADD COLUMN closed INTEGER NOT NULL DEFAULT 0 CHECK(closed IN (0, 1)); PRAGMA user_version = 14;")?;
         }
         tx.commit()?;
         Ok(Self { db })
@@ -647,7 +653,7 @@ impl SqliteStore {
         let tx = self
             .db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        tx.execute("INSERT OR IGNORE INTO agent_runtime SELECT id, version, ?3, ?4, 0, 0, 0, 0 FROM tasks WHERE id = ?1 AND version = ?2 AND NOT EXISTS (SELECT 1 FROM events WHERE task_id = ?1 AND revision = ?2 AND event LIKE '%checkpoint%')", params![task, revision, steps, failures])?;
+        tx.execute("INSERT OR IGNORE INTO agent_runtime (task_id, revision, max_steps, max_failures, steps, failures, pending, terminal) SELECT id, version, ?3, ?4, 0, 0, 0, 0 FROM tasks WHERE id = ?1 AND version = ?2 AND NOT EXISTS (SELECT 1 FROM events WHERE task_id = ?1 AND revision = ?2 AND event LIKE '%checkpoint%')", params![task, revision, steps, failures])?;
         let changed = tx.execute("UPDATE agent_runtime SET steps = steps + 1, pending = 1 WHERE task_id = ?1 AND revision = ?2 AND max_steps = ?3 AND max_failures = ?4 AND steps < max_steps AND failures < max_failures AND pending = 0 AND terminal = 0 AND EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND version = ?2)", params![task, revision, steps, failures])?;
         if changed == 1 {
             tx.execute("INSERT INTO events (task_id, event, revision, occurred_at) VALUES (?1, '{\"type\":\"checkpoint\",\"status\":\"thinking\"}', ?2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))", params![task, revision])?;

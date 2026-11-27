@@ -264,8 +264,17 @@ fn agent_runtime_has_durable_closure_separate_from_terminal() {
     let _ = std::fs::remove_dir_all(&dir);
     let store = SqliteStore::create(&dir).unwrap();
     let db = rusqlite::Connection::open(dir.join("jarvis.sqlite3")).unwrap();
-    let count: i64 = db.query_row("SELECT count(*) FROM pragma_table_info('agent_runtime') WHERE name = 'closed'", [], |r| r.get(0)).unwrap();
-    assert_eq!(count, 1, "runtime closure must be durable and independent of terminal");
+    let count: i64 = db
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('agent_runtime') WHERE name = 'closed'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        count, 1,
+        "runtime closure must be durable and independent of terminal"
+    );
     drop(db);
     drop(store);
     std::fs::remove_dir_all(dir).unwrap();
