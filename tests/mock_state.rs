@@ -50,6 +50,27 @@ fn approved_mock_write_persists_and_denials_do_not_mutate() {
             SystemTime::now() + Duration::from_secs(120),
         )
         .unwrap();
+    let mut no_approval = Broker::new(contract("write", "write", Scope::Write, "first"));
+    assert_eq!(no_approval.call(&write), Err(BrokerError::Denied));
+    let no_scope = contract("write", "write", Scope::Read, "first");
+    let mut denied_resource = contract("write", "write", Scope::Write, "first");
+    denied_resource.denied_resources.push("mock/item".into());
+    let mut expired = contract("write", "write", Scope::Write, "first");
+    expired.expires_at = SystemTime::now() - Duration::from_secs(1);
+    for denied in [no_scope, denied_resource, expired] {
+        let mut denied_broker =
+            Broker::with_approval(denied, store, "write".into(), "task".into(), 1);
+        assert_eq!(denied_broker.call(&write), Err(BrokerError::Denied));
+        assert_eq!(denied_broker.executions(), 0);
+        drop(denied_broker);
+        store = SqliteStore::open(&path).unwrap();
+    }
+    let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
+    let count: i64 = db
+        .query_row("SELECT count(*) FROM mock_state", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 0);
+    drop(db);
     let mut broker = Broker::with_approval(
         contract("write", "write", Scope::Write, "first"),
         store,
@@ -61,6 +82,9 @@ fn approved_mock_write_persists_and_denials_do_not_mutate() {
     assert_eq!(broker.call(&forged), Err(BrokerError::Denied));
     forged.resource = "mock/other".into();
     assert_eq!(broker.call(&forged), Err(BrokerError::Denied));
+    let mut wrong_class = request("write", "write", "first");
+    wrong_class.data_class = DataClass::Sensitive;
+    assert_eq!(broker.call(&wrong_class), Err(BrokerError::Denied));
     assert_eq!(broker.executions(), 0);
     assert_eq!(broker.call(&write), Ok("first".into()));
     assert_eq!(broker.call(&write), Err(BrokerError::Denied));

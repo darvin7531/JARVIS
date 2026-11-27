@@ -12,6 +12,7 @@ jobs:
         with:
           toolchain: 1.89.0
           components: rustfmt, clippy
+      - run: cargo test --locked --test storage --test shared_budget --test tool_broker
       - run: cargo test --locked --test mock_state
       - run: cargo test --locked --test broker_registry_red inspectable_schema_matches_validator -- --exact
       - run: cargo test --locked approval_expiring_while_freshness_query_is_locked_is_denied
