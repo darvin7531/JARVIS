@@ -197,7 +197,8 @@ pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'stat
     drop(broker);
     #[cfg(test)]
     if let Some(db) = fault_db {
-        db.execute_batch("DROP TRIGGER test_reject_outcome").unwrap();
+        db.execute_batch("DROP TRIGGER test_reject_outcome")
+            .unwrap();
     }
     if outcome == Err(BrokerError::OutcomeUncertain) {
         return Err("agent_outcome_uncertain");
@@ -353,11 +354,29 @@ mod tests {
     fn post_dispatch_outcome_failure_is_uncertain_and_never_replayed() {
         let path = std::env::temp_dir().join(format!("agent-post-dispatch-{}", std::process::id()));
         let mut store = SqliteStore::create(&path).unwrap();
-        store.create_task(&Task { id: "task".into(), version: 1, title: "test".into() }, "created", &[]).unwrap();
+        store
+            .create_task(
+                &Task {
+                    id: "task".into(),
+                    version: 1,
+                    title: "test".into(),
+                },
+                "created",
+                &[],
+            )
+            .unwrap();
         store.initialize_tool_budget(4).unwrap();
         let expires = SystemTime::now() + Duration::from_secs(300);
-        let request = ToolRequest { tool: "write".into(), action: "write".into(), resource: "mock/item".into(), data_class: DataClass::Public, arguments: json!({"text":"value"}) };
-        store.issue_tool_approval("write", "task", 1, &request, expires).unwrap();
+        let request = ToolRequest {
+            tool: "write".into(),
+            action: "write".into(),
+            resource: "mock/item".into(),
+            data_class: DataClass::Public,
+            arguments: json!({"text":"value"}),
+        };
+        store
+            .issue_tool_approval("write", "task", 1, &request, expires)
+            .unwrap();
         drop(store);
         let owner = json!({"store":path, "task":"task", "revision":1, "approval":"write", "read_approval":"missing", "resource":"mock/item", "data_class":"public", "permitted_text":"value", "expected":"value", "expires_unix":expires.duration_since(UNIX_EPOCH).unwrap().as_secs(), "context":"test"});
         let owner_path = path.join("owner.json");
@@ -368,16 +387,30 @@ mod tests {
         let result = run_owner(owner_path.as_os_str(), proposal_path.as_os_str());
         FAIL_OUTCOME.with(|flag| flag.set(false));
         let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
-        let value: String = db.query_row("SELECT value FROM mock_state WHERE resource = 'mock/item'", [], |r| r.get(0)).unwrap();
+        let value: String = db
+            .query_row(
+                "SELECT value FROM mock_state WHERE resource = 'mock/item'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(value, "value");
-        let pending: i64 = db.query_row("SELECT pending FROM tool_executions WHERE approval_id = 'write'", [], |r| r.get(0)).unwrap();
+        let pending: i64 = db
+            .query_row(
+                "SELECT pending FROM tool_executions WHERE approval_id = 'write'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(pending, 1);
         assert_eq!(result, Err("agent_outcome_uncertain"));
         drop(db);
         assert!(run_owner(owner_path.as_os_str(), proposal_path.as_os_str()).is_err());
         let store = SqliteStore::open(&path).unwrap();
         let events = store.events("task").unwrap();
-        assert!(!events.iter().any(|e| e.contains("denied_or_failed") || e.contains("verified")));
+        assert!(!events
+            .iter()
+            .any(|e| e.contains("denied_or_failed") || e.contains("verified")));
         drop(store);
         std::fs::remove_dir_all(path).unwrap();
     }
