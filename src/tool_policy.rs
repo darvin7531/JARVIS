@@ -133,7 +133,8 @@ impl Broker {
         }
         self.executions += 1;
         let result = text.to_owned();
-        store.record_tool_outcome(id, task, *revision)
+        store
+            .record_tool_outcome(id, task, *revision)
             .map_err(|_| BrokerError::OutcomeUncertain)?;
         Ok(result)
     }
