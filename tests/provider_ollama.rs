@@ -20,6 +20,20 @@ fn request() -> Request<'static> {
         timeout: Duration::from_secs(2),
     }
 }
+#[test]
+fn deadline_elapsing_before_dispatch_never_connects() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let mut r = request();
+    r.timeout = Duration::from_millis(100);
+    thread::sleep(Duration::from_millis(200));
+    assert_eq!(
+        Ollama { port: listener.local_addr().unwrap().port(), trusted_no_truncation: true }
+            .generate(&r, &AtomicBool::new(false), &mut |_| {}),
+        Err(Error::Timeout)
+    );
+    assert!(listener.accept().is_err(), "expired request connected");
+}
 fn serve(body: &'static str, delay: Duration) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
