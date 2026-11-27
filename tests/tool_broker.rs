@@ -1,42 +1,52 @@
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Scope {
-    Read,
-    Write,
-}
+use jarvis::tool_policy::{Broker, BrokerError, Grant, ToolRequest};
+use serde_json::json;
 
-struct Tool {
-    name: &'static str,
-    scope: Scope,
-}
-
-fn call(registry: &[Tool], name: &str, allowed: &[Scope], execute: &mut impl FnMut()) -> bool {
-    if registry
-        .iter()
-        .any(|tool| tool.name == name && allowed.contains(&tool.scope))
-    {
-        execute();
-        true
-    } else {
-        false
+fn request(tool: &str, resource: &str, arguments: serde_json::Value) -> ToolRequest {
+    ToolRequest {
+        tool: tool.into(),
+        resource: resource.into(),
+        arguments,
     }
 }
 
 #[test]
-fn broker_executes_allowed_tool_but_denies_other_scopes() {
-    let registry = [
-        Tool {
-            name: "read",
-            scope: Scope::Read,
-        },
-        Tool {
-            name: "write",
-            scope: Scope::Write,
-        },
-    ];
-    let mut calls = 0;
-    let mut execute = || calls += 1;
-    assert!(call(&registry, "read", &[Scope::Read], &mut execute));
-    assert!(!call(&registry, "write", &[Scope::Read], &mut execute));
-    assert!(!call(&registry, "unknown", &[Scope::Read], &mut execute));
-    assert_eq!(calls, 1);
+fn real_broker_enforces_registry_grants_and_schema_before_execution() {
+    let mut broker = Broker::default();
+    let grants = [Grant {
+        tool: "inert".into(),
+        resource: "task/item".into(),
+    }];
+    let args = json!({"text": "hello"});
+    assert_eq!(
+        broker.call(&request("inert", "task/item", args.clone()), &grants),
+        Ok("hello".into())
+    );
+    assert_eq!(
+        broker.call(&request("shell", "task/item", args.clone()), &grants),
+        Err(BrokerError::UnknownTool)
+    );
+    assert_eq!(
+        broker.call(&request("inert", "task/other", args.clone()), &grants),
+        Err(BrokerError::Denied)
+    );
+    assert_eq!(
+        broker.call(&request("inert", "", args.clone()), &grants),
+        Err(BrokerError::InvalidResource)
+    );
+    assert_eq!(
+        broker.call(&request("inert", "task/item", json!({"text": 2})), &grants),
+        Err(BrokerError::InvalidArguments)
+    );
+    assert_eq!(
+        broker.call(
+            &request("inert", "task/item", json!({"text": "x", "extra": 1})),
+            &grants
+        ),
+        Err(BrokerError::InvalidArguments)
+    );
+    assert_eq!(broker.executions(), 1);
+    assert!(serde_json::from_value::<ToolRequest>(json!({
+        "tool": "inert", "resource": "task/item", "arguments": {}, "extra": true
+    }))
+    .is_err());
 }
