@@ -221,6 +221,7 @@ fn sends_requested_token_limit_and_handles_fragmented_unicode() {
                     let payload: serde_json::Value =
                         serde_json::from_slice(&request[end + 4..end + 4 + length]).unwrap();
                     assert_eq!(payload["options"]["num_predict"], 8);
+                    assert_eq!(payload["truncate"], false);
                     break;
                 }
             }
