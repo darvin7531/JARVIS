@@ -259,6 +259,19 @@ fn task_revision_cannot_bypass_unreconciled_agent_step() {
 }
 
 #[test]
+fn agent_runtime_has_durable_closure_separate_from_terminal() {
+    let dir = std::env::temp_dir().join(format!("jarvis-agent-closure-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let store = SqliteStore::create(&dir).unwrap();
+    let db = rusqlite::Connection::open(dir.join("jarvis.sqlite3")).unwrap();
+    let count: i64 = db.query_row("SELECT count(*) FROM pragma_table_info('agent_runtime') WHERE name = 'closed'", [], |r| r.get(0)).unwrap();
+    assert_eq!(count, 1, "runtime closure must be durable and independent of terminal");
+    drop(db);
+    drop(store);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn updating_task_checks_version_and_records_audit_atomically() {
     let dir = std::env::temp_dir().join(format!("jarvis-revision-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
