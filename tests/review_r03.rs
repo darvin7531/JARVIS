@@ -28,7 +28,7 @@ fn serve(listener: TcpListener, pieces: Vec<&'static str>) -> thread::JoinHandle
     thread::spawn(move || {
         let (mut s, _) = listener.accept().unwrap();
         let mut buf = [0; 4096];
-        s.read(&mut buf).unwrap();
+        assert!(s.read(&mut buf).unwrap() > 0);
         let mut body = String::new();
         for piece in pieces {
             body.push_str(&format!(
@@ -87,8 +87,15 @@ fn deadline_after_budget_lock_never_connects() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
+    thread::sleep(Duration::from_millis(40));
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGSTOP);
+    }
     thread::sleep(Duration::from_millis(1300));
     lock.execute_batch("ROLLBACK").unwrap();
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGCONT);
+    }
     let out = child.wait_with_output().unwrap();
     assert!(
         listener.accept().is_err(),
@@ -127,6 +134,7 @@ fn terminal_escapes_controls_but_pipe_stays_raw() {
             let master = unsafe { OwnedFd::from_raw_fd(master) };
             let slave = unsafe { OwnedFd::from_raw_fd(slave) };
             let child = cmd.stdout(Stdio::from(slave)).spawn().unwrap();
+            drop(cmd);
             let out = child.wait_with_output().unwrap();
             let mut text = String::new();
             let _ = std::fs::File::from(master).read_to_string(&mut text);
