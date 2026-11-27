@@ -40,7 +40,7 @@ fn concurrent_processes_settle_and_retain_unknown_usage() {
     fs::write(&config, serde_json::json!({
         "models": [{"name":"model","tier":"t1","capabilities":["text"],"allowed_data":["public"],"port":port}],
         "limits": {"max_tokens":5},
-        "budget": {"workspace":root,"limit_tokens":18,"max_input_tokens":10}
+        "budget": {"workspace":root,"limit_tokens":100,"max_input_tokens":10}
     }).to_string()).unwrap();
     let (ready_tx, ready_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
@@ -259,7 +259,35 @@ fn failed_settlement_blocks_later_requests_after_writer_unlocks() {
     drop(store);
     let mut reopened = SqliteStore::open(&root).unwrap();
     assert!(reopened.reserve_tokens(100, 15).unwrap().is_none());
+    reopened.settle_tokens(id, 120).unwrap();
+    assert!(reopened.settle_tokens(id, 0).is_err());
+    assert!(reopened.reserve_tokens(100, 15).unwrap().is_none());
     drop(reopened);
     drop(lock);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn legacy_reservations_migrate_as_unresolved_without_losing_charges() {
+    use jarvis::storage::SqliteStore;
+    let root = std::env::temp_dir().join(format!("jarvis-budget-migrate-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    drop(SqliteStore::create(&root).unwrap());
+    let db = rusqlite::Connection::open(root.join("jarvis.sqlite3")).unwrap();
+    db.execute_batch("ALTER TABLE inference_budget DROP COLUMN pending; INSERT INTO inference_budget (id, tokens) VALUES (1, 15), (2, 20); INSERT INTO inference_budget_limit VALUES (1, 100); PRAGMA user_version = 6;").unwrap();
+    drop(db);
+    let mut store = SqliteStore::open(&root).unwrap();
+    assert!(store.reserve_tokens(100, 1).unwrap().is_none());
+    drop(store);
+    let db = rusqlite::Connection::open(root.join("jarvis.sqlite3")).unwrap();
+    let (tokens, pending): (i64, i64) = db
+        .query_row(
+            "SELECT sum(tokens), sum(pending) FROM inference_budget",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((tokens, pending), (35, 2));
+    drop(db);
     fs::remove_dir_all(root).unwrap();
 }

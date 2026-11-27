@@ -28,7 +28,7 @@ fn interrupted_process_retains_reservation(kill: bool) {
     fs::write(&config, serde_json::json!({
         "models": [{"name":"model","tier":"t1","capabilities":["text"],"allowed_data":["public"],"port":listener.local_addr().unwrap().port()}],
         "limits":{"max_tokens":5},
-        "budget":{"workspace":root,"limit_tokens":15,"max_input_tokens":10}
+        "budget":{"workspace":root,"limit_tokens":100,"max_input_tokens":10}
     }).to_string()).unwrap();
     let (tx, rx) = mpsc::channel();
     let (stop_tx, stop_rx) = mpsc::channel();
