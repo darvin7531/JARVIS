@@ -124,12 +124,12 @@ impl Broker {
         if args.text != contract.permitted_text {
             return Err(BrokerError::Denied);
         }
-        match self.approval.as_mut() {
-            Some((store, id, task, revision))
-                if store
-                    .consume_tool_approval(id, task, *revision, request)
-                    .unwrap_or(false) => {}
-            _ => return Err(BrokerError::Denied),
+        let (store, id, task, revision) = self.approval.as_mut().ok_or(BrokerError::Denied)?;
+        if !store
+            .consume_tool_approval(id, task, *revision, request)
+            .unwrap_or(false)
+        {
+            return Err(BrokerError::Denied);
         }
         self.executions += 1;
         Ok(args.text)
