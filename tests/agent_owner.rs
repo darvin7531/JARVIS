@@ -147,6 +147,23 @@ fn owner_loop_skips_non_action_and_stops_after_verified_write() {
     let exhausted = run("approved");
     assert!(!exhausted.status.success());
     assert!(String::from_utf8_lossy(&exhausted.stderr).contains("agent_steps"));
+    limited["max_steps"] = json!(3);
+    limited["max_failures"] = json!(1);
+    std::fs::write(&owner_path, limited.to_string()).unwrap();
+    std::fs::write(
+        &proposal_path,
+        json!([{ "kind":"continue", "grant":"write" }, { "kind":"tool", "request":req("write", "approved") }]).to_string(),
+    ).unwrap();
+    let failed = Command::new(env!("CARGO_BIN_EXE_jarvis"))
+        .arg("agent")
+        .arg("--owner")
+        .arg(&owner_path)
+        .arg("--mock-response")
+        .arg(&proposal_path)
+        .output()
+        .unwrap();
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("agent_failures"));
     std::fs::write(&owner_path, owner.to_string()).unwrap();
     let denied = run("forged");
     assert!(!denied.status.success());
