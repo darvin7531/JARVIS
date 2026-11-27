@@ -125,7 +125,17 @@ fn sensitive_owner_never_reaches_untrusted_model() {
     use std::net::TcpListener;
     let root = std::env::temp_dir().join(format!("configured-sensitive-{}", std::process::id()));
     let mut store = SqliteStore::create(&root).unwrap();
-    store.create_task(&Task { id: "task".into(), version: 1, title: "test".into() }, "created", &[]).unwrap();
+    store
+        .create_task(
+            &Task {
+                id: "task".into(),
+                version: 1,
+                title: "test".into(),
+            },
+            "created",
+            &[],
+        )
+        .unwrap();
     drop(store);
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -135,7 +145,13 @@ fn sensitive_owner_never_reaches_untrusted_model() {
     let config_path = root.join("config.json");
     std::fs::write(&owner_path, owner.to_string()).unwrap();
     std::fs::write(&config_path, config.to_string()).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_jarvis")).args(["agent","--owner"]).arg(owner_path).arg("--config").arg(config_path).output().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_jarvis"))
+        .args(["agent", "--owner"])
+        .arg(owner_path)
+        .arg("--config")
+        .arg(config_path)
+        .output()
+        .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("data_not_allowed"));
     assert!(listener.accept().is_err());
