@@ -293,8 +293,33 @@ fn closed_agent_runtime_cannot_resume() {
     assert!(store.agent_step("closed", 1, 2, 2).unwrap());
     store.finish_agent_step("closed", 1, false, false).unwrap();
     let db = rusqlite::Connection::open(dir.join("jarvis.sqlite3")).unwrap();
-    db.execute("UPDATE agent_runtime SET closed = 1", []).unwrap();
+    db.execute("UPDATE agent_runtime SET closed = 1", [])
+        .unwrap();
     assert!(!store.agent_step("closed", 1, 2, 2).unwrap());
+    drop(db);
+    drop(store);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn explicit_closure_permits_next_revision_only() {
+    let dir = std::env::temp_dir().join(format!("jarvis-closed-revision-{}", std::process::id()));
+    let mut store = SqliteStore::create(&dir).unwrap();
+    let task = Task {
+        id: "closed".into(),
+        version: 1,
+        title: "closed".into(),
+    };
+    store.create_task(&task, "created", &[]).unwrap();
+    assert!(store.agent_step("closed", 1, 2, 2).unwrap());
+    let revised = Task { version: 2, ..task };
+    assert!(store.update_task(&revised, "update").is_err());
+    let db = rusqlite::Connection::open(dir.join("jarvis.sqlite3")).unwrap();
+    db.execute("UPDATE agent_runtime SET closed = 1", [])
+        .unwrap();
+    store.update_task(&revised, "update").unwrap();
+    assert!(!store.agent_step("closed", 1, 2, 2).unwrap());
+    assert!(store.agent_step("closed", 2, 2, 2).unwrap());
     drop(db);
     drop(store);
     std::fs::remove_dir_all(dir).unwrap();
