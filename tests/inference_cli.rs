@@ -32,3 +32,14 @@ fn mock_route_rejects_unsupported_capability() {
     assert!(!output.status.success());
     assert_eq!(output.stderr, b"{\"error\":\"capability_unavailable\"}\n");
 }
+
+#[test]
+fn mock_route_rejects_disallowed_data() {
+    let output = Command::new(env!("CARGO_BIN_EXE_jarvis"))
+        .env_clear()
+        .args(["chat", "--mock", "--data", "sensitive", "hello"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert_eq!(output.stderr, b"{\"error\":\"data_not_allowed\"}\n");
+}
