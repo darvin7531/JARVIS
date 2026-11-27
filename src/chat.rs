@@ -183,7 +183,7 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
                 .collect::<Result<Vec<_>, _>>()?
                 .into_iter()
                 .filter(|class| m.trusted_local || *class == DataClass::Public)
-                .collect(),
+                .collect::<Vec<_>>(),
         );
     }
     let profiles: Vec<_> = config
