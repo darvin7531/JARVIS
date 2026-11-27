@@ -364,11 +364,11 @@ fn pending_execution_blocks_task_revision_across_connections() {
     create_task(&mut store);
     store.initialize_tool_budget(10).unwrap();
     store.issue_tool_approval("one", "task", 1, &request(), SystemTime::now() + Duration::from_secs(60)).unwrap();
+    let mut other = jarvis::storage::SqliteStore::open(&path).unwrap();
     let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
     db.execute_batch("CREATE TRIGGER reject_outcome BEFORE UPDATE OF pending ON tool_executions BEGIN SELECT RAISE(ABORT, 'outcome failed'); END;").unwrap();
     let mut broker = Broker::with_approval(contract(), store, "one".into(), "task".into(), 1);
     assert_eq!(broker.call(&request()), Err(BrokerError::OutcomeUncertain));
-    let mut other = jarvis::storage::SqliteStore::open(&path).unwrap();
     let changed = jarvis::storage::Task { id: "task".into(), version: 2, title: "changed".into() };
     assert!(other.update_task(&changed, "updated").is_err());
     assert_eq!(other.task("task").unwrap().unwrap().version, 1);
