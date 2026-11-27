@@ -19,6 +19,8 @@ Storage workspaces are private directories (no group or other permissions); open
 
 Backups retry SQLite steps for approximately three seconds with 100 ms SQLite busy timeouts; this is not a hard wall-clock deadline: individual SQLite calls, filesystem I/O, scheduling, and publication can take longer. A backup is published only after completion and never replaces an existing destination. The destination parent must be owned by the effective user and not group- or world-writable; all path ancestors, ACLs, and same-user processes must also be trusted against substitution. If the final parent-directory sync fails, backup returns an error but the destination may already exist; inspect it before retrying. New evidence provenance and classification must be nonblank strings of at most 1024 bytes; they are not authenticated security labels. Observed time, when present, must be a valid UTC timestamp in `YYYY-MM-DDTHH:MM:SSZ` or `YYYY-MM-DDTHH:MM:SS.sssZ` format. Existing legacy metadata is not retroactively validated.
 
+API-created backups invalidate pending tool approvals in the snapshot; issue fresh approvals after restoration. Old backups and external filesystem copies cannot be recognized as rollbacks without trusted external state and require manual quarantine and reconciliation before use.
+
 Configured chat connects to a loopback Ollama-compatible server and requires `curl` on PATH. Example `chat.json` (no secrets):
 
 ```json

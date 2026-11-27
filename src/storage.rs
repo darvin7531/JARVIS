@@ -507,7 +507,7 @@ impl SqliteStore {
                     }
                 }
                 // A snapshot cannot establish how much was spent after it was taken.
-                destination.execute("INSERT INTO inference_budget (id, tokens, pending) VALUES (-1, 0, 1) ON CONFLICT(id) DO UPDATE SET pending = 1", [])?;
+                destination.execute_batch("BEGIN IMMEDIATE; INSERT INTO inference_budget (id, tokens, pending) VALUES (-1, 0, 1) ON CONFLICT(id) DO UPDATE SET pending = 1; UPDATE tool_approvals SET consumed = 1 WHERE consumed = 0; COMMIT;")?;
             }
             std::fs::File::open(temporary.join("jarvis.sqlite3"))
                 .and_then(|file| file.sync_all())
