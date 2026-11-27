@@ -5,12 +5,13 @@ use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use std::{
     ffi::OsString,
     fs::File,
-    io::{Read, Write},
+    io::Read,
+    os::fd::AsRawFd,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[derive(Deserialize)]
@@ -70,6 +71,16 @@ fn data(s: &str) -> Option<DataClass> {
     }
 }
 
+struct RestoreFlags(i32, i32);
+impl Drop for RestoreFlags {
+    fn drop(&mut self) {
+        // SAFETY: the descriptor remains owned by stdout throughout this scope.
+        unsafe {
+            libc::fcntl(self.0, libc::F_SETFL, self.1);
+        }
+    }
+}
+
 pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str> {
     let path = args.next().ok_or("invalid_arguments")?;
     let mut bytes = Vec::new();
@@ -93,12 +104,17 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
     let mut required = Capability::Text;
     let mut class = DataClass::Public;
     let mut seen = Vec::new();
+    let mut stdin_prompt = false;
     let prompt = loop {
         let arg = args
             .next()
             .ok_or("invalid_arguments")?
             .into_string()
             .map_err(|_| "invalid_arguments")?;
+        if arg == "--stdin" {
+            stdin_prompt = true;
+            break String::new();
+        }
         if !arg.starts_with("--") {
             break arg;
         }
@@ -122,6 +138,23 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
     if args.next().is_some() {
         return Err("invalid_arguments");
     }
+    if class == DataClass::Sensitive && !stdin_prompt {
+        return Err("sensitive_requires_stdin");
+    }
+    let prompt = if stdin_prompt {
+        let mut bytes = Vec::new();
+        std::io::stdin()
+            .lock()
+            .take(1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "invalid_prompt")?;
+        if bytes.len() > 1024 * 1024 {
+            return Err("invalid_prompt");
+        }
+        String::from_utf8(bytes).map_err(|_| "invalid_prompt")?
+    } else {
+        prompt
+    };
     // This transport accepts text prompts only; profile labels cannot add modalities.
     if required != Capability::Text {
         return Err("capability_unavailable");
@@ -182,25 +215,54 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
         max_output_bytes: config.limits.max_output_bytes,
         timeout: Duration::from_secs(config.limits.timeout_seconds),
     };
-    let mut failed = false;
+    let stdout = std::io::stdout();
+    let fd = stdout.as_raw_fd();
+    // SAFETY: fcntl operates on the live stdout descriptor and integer flags.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err("output_failed");
+    }
+    let _restore = RestoreFlags(fd, flags);
+    let started = Instant::now();
+    let mut failure = None;
     let usage = Ollama {
         port: config.models[index].port,
     }
     .generate(&req, &cancelled, &mut |text| {
-        let mut out = std::io::stdout().lock();
-        if out
-            .write_all(text.as_bytes())
-            .and_then(|_| out.flush())
-            .is_err()
-        {
-            failed = true;
-            cancelled.store(true, Ordering::Relaxed);
+        let mut bytes = text.as_bytes();
+        while !bytes.is_empty() {
+            if cancelled.load(Ordering::Relaxed) {
+                break;
+            }
+            if started.elapsed() >= req.timeout {
+                failure = Some("timeout");
+                cancelled.store(true, Ordering::Relaxed);
+                break;
+            }
+            // SAFETY: bytes is valid for the provided length; fd is open stdout.
+            let n = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
+            if n > 0 {
+                bytes = &bytes[n as usize..];
+            } else if n < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::WouldBlock {
+                    std::thread::sleep(Duration::from_millis(10));
+                } else if error.kind() != std::io::ErrorKind::Interrupted {
+                    failure = Some("output_failed");
+                    cancelled.store(true, Ordering::Relaxed);
+                    break;
+                }
+            } else {
+                failure = Some("output_failed");
+                cancelled.store(true, Ordering::Relaxed);
+                break;
+            }
         }
     })
     .map_err(|error| {
         eprintln!("{{\"usage\":null}}");
-        if failed {
-            return "output_failed";
+        if let Some(code) = failure {
+            return code;
         }
         match error {
             jarvis::provider::Error::Cancelled => "cancelled",
@@ -209,8 +271,12 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
             _ => "inference_failed",
         }
     })?;
-    if failed {
-        return Err("output_failed");
+    if let Some(code) = failure {
+        return Err(code);
+    }
+    if cancelled.load(Ordering::Relaxed) {
+        eprintln!("{{\"usage\":null}}");
+        return Err("cancelled");
     }
     eprintln!(
         "{{\"input_tokens\":{},\"output_tokens\":{}}}",

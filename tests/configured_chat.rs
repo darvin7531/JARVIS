@@ -11,7 +11,7 @@ fn configured_chat_rejects_disallowed_data_before_connecting() {
             path.to_str().unwrap(),
             "--data",
             "sensitive",
-            "hello",
+            "--stdin",
         ])
         .output()
         .unwrap();
