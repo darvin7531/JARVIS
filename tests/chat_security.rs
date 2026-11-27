@@ -1,0 +1,193 @@
+use std::{
+    fs,
+    io::{Read, Write},
+    net::TcpListener,
+    process::{Command, Stdio},
+    thread,
+    time::{Duration, Instant},
+};
+
+struct Guard(std::process::Child);
+impl Drop for Guard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn config(port: u16, timeout: u64, name: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "jarvis-security-{name}-{}.json",
+        std::process::id()
+    ));
+    fs::write(&path, format!(r#"{{"limits":{{"timeout_seconds":{timeout},"max_output_bytes":524288}},"models":[{{"name":"test","tier":"t1","capabilities":["text"],"allowed_data":["sensitive"],"port":{port}}}]}}"#)).unwrap();
+    path
+}
+
+#[test]
+fn sensitive_argv_is_rejected() {
+    let path = config(1, 5, "argv");
+    let output = Command::new(env!("CARGO_BIN_EXE_jarvis"))
+        .args([
+            "chat",
+            "--config",
+            path.to_str().unwrap(),
+            "--data",
+            "sensitive",
+            "secret",
+        ])
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+    assert_eq!(output.stderr, b"{\"error\":\"sensitive_requires_stdin\"}\n");
+}
+
+#[test]
+fn sensitive_stdin_reaches_provider() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let path = config(listener.local_addr().unwrap().port(), 5, "stdin");
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut headers = Vec::new();
+        let mut byte = [0];
+        while !headers.ends_with(b"\r\n\r\n") {
+            socket.read_exact(&mut byte).unwrap();
+            headers.push(byte[0]);
+        }
+        let headers = String::from_utf8(headers).unwrap();
+        let length: usize = headers
+            .lines()
+            .find_map(|s| {
+                s.to_ascii_lowercase()
+                    .strip_prefix("content-length:")
+                    .map(|v| v.trim().parse().unwrap())
+            })
+            .unwrap();
+        let mut body = vec![0; length];
+        socket.read_exact(&mut body).unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["prompt"], "secret from stdin");
+        socket.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"response\":\"ok\",\"done\":true,\"prompt_eval_count\":1,\"eval_count\":1}\n").unwrap();
+    });
+    let mut child = Guard(
+        Command::new(env!("CARGO_BIN_EXE_jarvis"))
+            .args([
+                "chat",
+                "--config",
+                path.to_str().unwrap(),
+                "--data",
+                "sensitive",
+                "--stdin",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    child
+        .0
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"secret from stdin")
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while child.0.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "stdin request hung");
+        thread::sleep(Duration::from_millis(20));
+    }
+    let mut stdout = String::new();
+    child
+        .0
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut stdout)
+        .unwrap();
+    assert_eq!(stdout, "ok");
+    assert!(child.0.wait().unwrap().success());
+    server.join().unwrap();
+    fs::remove_file(path).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn full_stdout_pipe_respects_sigint_and_timeout() {
+    for (signal, timeout) in [(true, 10), (false, 1)] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let path = config(
+            listener.local_addr().unwrap().port(),
+            timeout,
+            if signal { "signal" } else { "timeout" },
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_write_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            let line = format!(
+                "{{\"response\":\"{}\",\"done\":false}}\n",
+                "x".repeat(200000)
+            );
+            let _ = socket.write_all(line.as_bytes());
+            tx.send(()).unwrap();
+            thread::sleep(Duration::from_secs(2));
+        });
+        let mut child = Guard(
+            Command::new(env!("CARGO_BIN_EXE_jarvis"))
+                .args([
+                    "chat",
+                    "--config",
+                    path.to_str().unwrap(),
+                    "--data",
+                    "sensitive",
+                    "--stdin",
+                ])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        child.0.stdin.take().unwrap().write_all(b"test").unwrap();
+        rx.recv_timeout(Duration::from_secs(4)).unwrap();
+        thread::sleep(Duration::from_millis(300));
+        if signal {
+            assert!(Command::new("kill")
+                .args(["-INT", &child.0.id().to_string()])
+                .status()
+                .unwrap()
+                .success());
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while child.0.try_wait().unwrap().is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "blocked stdout prevented shutdown"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        let mut err = String::new();
+        child
+            .0
+            .stderr
+            .take()
+            .unwrap()
+            .read_to_string(&mut err)
+            .unwrap();
+        assert!(
+            err.contains(if signal { "cancelled" } else { "timeout" }),
+            "{err}"
+        );
+        server.join().unwrap();
+        fs::remove_file(path).unwrap();
+    }
+}
