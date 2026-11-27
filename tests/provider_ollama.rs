@@ -151,3 +151,40 @@ fn callback_panic_closes_transport() {
         "curl kept the connection open after panic"
     );
 }
+
+#[test]
+fn incomplete_http_body_is_transport_error_even_after_done() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = [0; 4096];
+        let _ = stream.read(&mut buf);
+        let body = "{\"response\":\"ok\",\"done\":true,\"prompt_eval_count\":1,\"eval_count\":1}\n";
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len() + 1,
+            body
+        )
+        .unwrap();
+    });
+    assert_eq!(
+        Ollama { port }.generate(&request(), &AtomicBool::new(false), &mut |_| {}),
+        Err(Error::Transport)
+    );
+}
+
+#[test]
+fn missing_usage_rejects_completion_after_provisional_chunk() {
+    let port = serve(
+        "{\"response\":\"first\",\"done\":false}\n{\"response\":\"last\",\"done\":true}\n",
+        Duration::ZERO,
+    );
+    let mut text = String::new();
+    let result = Ollama { port }.generate(&request(), &AtomicBool::new(false), &mut |s| {
+        text.push_str(s)
+    });
+    assert_eq!(result, Err(Error::InvalidStream));
+    assert_eq!(text, "first");
+}
