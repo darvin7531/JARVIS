@@ -241,7 +241,19 @@ fn inherited_stdout_flags_remain_unchanged() {
             .spawn()
             .unwrap(),
     );
-    thread::sleep(Duration::from_millis(500));
+    let deadline = Instant::now() + Duration::from_secs(4);
+    loop {
+        let mut available: libc::c_int = 0;
+        assert_eq!(
+            unsafe { libc::ioctl(_reader.as_raw_fd(), libc::FIONREAD, &mut available) },
+            0
+        );
+        if available > 0 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "stream did not reach stdout");
+        thread::sleep(Duration::from_millis(10));
+    }
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     assert_eq!(
         flags & libc::O_NONBLOCK,
@@ -249,6 +261,11 @@ fn inherited_stdout_flags_remain_unchanged() {
         "shared stdout became nonblocking"
     );
     child.0.kill().unwrap();
+    child.0.wait().unwrap();
+    assert_eq!(
+        unsafe { libc::fcntl(fd, libc::F_GETFL) } & libc::O_NONBLOCK,
+        0
+    );
     server.join().unwrap();
     fs::remove_file(path).unwrap();
 }
@@ -360,5 +377,27 @@ fn sensitive_terminal_input_is_rejected() {
         .read_to_string(&mut err)
         .unwrap();
     assert!(err.contains("sensitive_tty"), "{err}");
+    fs::remove_file(path).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn stdout_pipe_without_reader_fails() {
+    use std::os::fd::FromRawFd;
+    let path = config(1, 2, "no-reader");
+    let mut fds = [0; 2];
+    assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+    unsafe {
+        libc::close(fds[0]);
+    }
+    let writer = unsafe { fs::File::from_raw_fd(fds[1]) };
+    let output = Command::new(env!("CARGO_BIN_EXE_jarvis"))
+        .args(["chat", "--config", path.to_str().unwrap(), "test"])
+        .stdout(Stdio::from(writer))
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("output_failed"));
     fs::remove_file(path).unwrap();
 }
