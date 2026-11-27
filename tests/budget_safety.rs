@@ -10,7 +10,17 @@ use std::{
 
 #[test]
 fn killed_process_retains_reservation() {
-    let root = std::env::temp_dir().join(format!("jarvis-budget-kill-{}", std::process::id()));
+    interrupted_process_retains_reservation(true);
+}
+
+#[test]
+fn cancelled_process_retains_reservation() {
+    interrupted_process_retains_reservation(false);
+}
+
+fn interrupted_process_retains_reservation(kill: bool) {
+    let root =
+        std::env::temp_dir().join(format!("jarvis-budget-kill-{}-{kill}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     drop(SqliteStore::create(&root).unwrap());
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -40,7 +50,11 @@ fn killed_process_retains_reservation() {
         .spawn()
         .unwrap();
     rx.recv_timeout(Duration::from_secs(10)).unwrap();
-    child.kill().unwrap();
+    if kill {
+        child.kill().unwrap();
+    } else {
+        assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGTERM) }, 0);
+    }
     child.wait().unwrap();
     stop_tx.send(()).unwrap();
     server.join().unwrap();
