@@ -358,6 +358,25 @@ fn backup_does_not_revive_pending_approval() {
 }
 
 #[test]
+fn pending_execution_blocks_task_revision_across_connections() {
+    let path = std::env::temp_dir().join(format!("jarvis-pending-revision-{}", std::process::id()));
+    let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
+    create_task(&mut store);
+    store.initialize_tool_budget(10).unwrap();
+    store.issue_tool_approval("one", "task", 1, &request(), SystemTime::now() + Duration::from_secs(60)).unwrap();
+    let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
+    db.execute_batch("CREATE TRIGGER reject_outcome BEFORE UPDATE OF pending ON tool_executions BEGIN SELECT RAISE(ABORT, 'outcome failed'); END;").unwrap();
+    let mut broker = Broker::with_approval(contract(), store, "one".into(), "task".into(), 1);
+    assert_eq!(broker.call(&request()), Err(BrokerError::OutcomeUncertain));
+    let mut other = jarvis::storage::SqliteStore::open(&path).unwrap();
+    let changed = jarvis::storage::Task { id: "task".into(), version: 2, title: "changed".into() };
+    assert!(other.update_task(&changed, "updated").is_err());
+    assert_eq!(other.task("task").unwrap().unwrap().version, 1);
+    db.execute_batch("DROP TRIGGER reject_outcome; UPDATE tool_executions SET pending = 0 WHERE approval_id = 'one';").unwrap();
+    other.update_task(&changed, "updated").unwrap();
+}
+
+#[test]
 fn approval_rejected_after_task_revision_changes() {
     let path = std::env::temp_dir().join(format!("jarvis-approval-stale-{}", std::process::id()));
     let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
