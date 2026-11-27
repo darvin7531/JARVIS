@@ -725,7 +725,10 @@ fn contract_expiring_during_intent_commit_never_dispatches() {
     let mut short = contract();
     short.expires_at = SystemTime::now() + Duration::from_millis(100);
     let mut broker = Broker::with_approval(short, store, "one".into(), "task".into(), 1);
-    assert_eq!(broker.call(&request()), Err(BrokerError::ReconciliationRequired));
+    assert_eq!(
+        broker.call(&request()),
+        Err(BrokerError::ReconciliationRequired)
+    );
     assert_eq!(broker.executions(), 0);
 }
 
@@ -782,8 +785,8 @@ fn cancellation_before_dispatch_preserves_approval() {
     use std::sync::atomic::AtomicBool;
     let mut broker = approved(contract(), request());
     assert_eq!(
-        format!("{:?}", broker.call_cancellable(&request(), &AtomicBool::new(true))),
-        "Err(Cancelled)"
+        broker.call_cancellable(&request(), &AtomicBool::new(true)),
+        Err(BrokerError::Cancelled)
     );
     assert_eq!(broker.executions(), 0);
     assert_eq!(broker.call(&request()), Ok("hello".into()));

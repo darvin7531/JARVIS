@@ -254,7 +254,7 @@ fn missing_read_approval_records_failed_verification_without_replay() {
     let store = SqliteStore::open(&path).unwrap();
     let events = store.events("task").unwrap();
     assert!(
-        events.iter().any(|e| e.contains("verification_failed")),
+        events.iter().any(|e| e.contains("verification_incomplete")),
         "{events:?}"
     );
     drop(store);
