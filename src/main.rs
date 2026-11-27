@@ -11,7 +11,7 @@ use signal_hook::{
 use std::{
     env,
     fs::{File, OpenOptions},
-    io::{self, Read},
+    io::{self, Read, Write},
     os::unix::fs::OpenOptionsExt,
     process::ExitCode,
     sync::mpsc,
@@ -32,6 +32,7 @@ enum Error {
     CapabilityUnavailable,
     DataNotAllowed,
     SignalSetupFailed,
+    OutputFailed,
     Chat(&'static str),
 }
 
@@ -44,6 +45,7 @@ impl Error {
             Self::CapabilityUnavailable => "capability_unavailable",
             Self::DataNotAllowed => "data_not_allowed",
             Self::SignalSetupFailed => "signal_setup_failed",
+            Self::OutputFailed => "output_failed",
             Self::Chat(code) => code,
         }
     }
@@ -181,28 +183,32 @@ fn run() -> Result<(), Error> {
     let (stop_sender, stop_receiver) = mpsc::channel();
     let (done_sender, done_receiver) = mpsc::channel();
     std::thread::spawn(move || {
-        println!(
-            "{}",
-            serde_json::to_string(&Event {
-                event: Lifecycle::Started
-            })
-            .unwrap()
-        );
-        let _ = stop_receiver.recv();
-        println!(
-            "{}",
-            serde_json::to_string(&Event {
-                event: Lifecycle::Stopped
-            })
-            .unwrap()
-        );
-        let _ = done_sender.send(());
+        let result = (|| -> io::Result<()> {
+            writeln!(
+                io::stdout(),
+                "{}",
+                serde_json::to_string(&Event {
+                    event: Lifecycle::Started
+                })?
+            )?;
+            let _ = stop_receiver.recv();
+            writeln!(
+                io::stdout(),
+                "{}",
+                serde_json::to_string(&Event {
+                    event: Lifecycle::Stopped
+                })?
+            )
+        })();
+        let _ = done_sender.send(result);
     });
     let _ = receiver.recv();
     let _ = stop_sender.send(());
     // ponytail: blocked stdout may lose lifecycle events; use cancellable I/O if delivery is required.
-    let _ = done_receiver.recv_timeout(Duration::from_millis(100));
-    Ok(())
+    match done_receiver.recv_timeout(Duration::from_millis(100)) {
+        Ok(Ok(())) | Err(mpsc::RecvTimeoutError::Timeout) => Ok(()),
+        Ok(Err(_)) | Err(mpsc::RecvTimeoutError::Disconnected) => Err(Error::OutputFailed),
+    }
 }
 
 fn main() -> ExitCode {

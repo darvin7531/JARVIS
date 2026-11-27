@@ -74,7 +74,10 @@ fn closed_stdout_reports_failure_on_shutdown() {
     assert_eq!(started, "{\"event\":\"started\"}\n");
     drop(stdout);
     child.0.stdin.take().unwrap().write_all(b"\n").unwrap();
-    assert!(!wait(&mut child).success(), "closed stdout was reported as success");
+    assert!(
+        !wait(&mut child).success(),
+        "closed stdout was reported as success"
+    );
     let mut stderr = String::new();
     std::io::Read::read_to_string(&mut child.0.stderr.take().unwrap(), &mut stderr).unwrap();
     assert_eq!(stderr, "{\"error\":\"output_failed\"}\n");
