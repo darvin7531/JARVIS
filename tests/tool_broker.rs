@@ -689,3 +689,51 @@ fn contract_expiring_during_intent_commit_never_dispatches() {
     assert_eq!(broker.call(&request()), Err(BrokerError::Denied));
     assert_eq!(broker.executions(), 0);
 }
+
+#[test]
+fn owner_reconciliation_records_each_factual_outcome() {
+    let path = std::env::temp_dir().join(format!(
+        "jarvis-tool-reconcile-facts-{}",
+        std::process::id()
+    ));
+    let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
+    create_task(&mut store);
+    store.initialize_tool_budget(4).unwrap();
+    let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
+    for (id, outcome, expected) in [
+        ("success", ReconciliationOutcome::Succeeded, "succeeded"),
+        ("failure", ReconciliationOutcome::Failed, "failed"),
+        (
+            "not-run",
+            ReconciliationOutcome::NotExecuted,
+            "not_executed",
+        ),
+        ("uncertain", ReconciliationOutcome::Unknown, "unknown"),
+    ] {
+        store
+            .issue_tool_approval(
+                id,
+                "task",
+                1,
+                &request(),
+                SystemTime::now() + Duration::from_secs(60),
+            )
+            .unwrap();
+        db.execute_batch("CREATE TRIGGER reject_factual_outcome BEFORE INSERT ON events WHEN NEW.event LIKE '%tool_execution_outcome%' BEGIN SELECT RAISE(ABORT, 'failed'); END;").unwrap();
+        let mut broker = Broker::with_approval(contract(), store, id.into(), "task".into(), 1);
+        assert_eq!(broker.call(&request()), Err(BrokerError::OutcomeUncertain));
+        drop(broker);
+        db.execute_batch("DROP TRIGGER reject_factual_outcome;")
+            .unwrap();
+        store = jarvis::storage::SqliteStore::open(&path).unwrap();
+        store.reconcile_tool_execution(id, outcome).unwrap();
+        let event: String = db.query_row("SELECT event FROM events WHERE task_id = 'task' AND revision = 1 AND json_extract(event, '$.type') = 'tool_execution_reconciliation' AND json_extract(event, '$.approval_id') = ?1", [id], |r| r.get(0)).unwrap();
+        let event: Value = serde_json::from_str(&event).unwrap();
+        assert_eq!(event["outcome"], expected);
+        assert!(store.reconcile_tool_execution(id, outcome).is_err());
+    }
+    let used: i64 = db
+        .query_row("SELECT used FROM tool_budget", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(used, 4);
+}

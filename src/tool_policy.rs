@@ -56,8 +56,19 @@ pub enum BrokerError {
     OutcomeUncertain,
 }
 
-pub fn tool_schema(_name: &str) -> Option<Value> {
-    None
+const INERT_TEXT_MAX_BYTES: usize = 1024;
+
+/// Argument schema; maxUtf8Bytes counts UTF-8 bytes, not Unicode characters.
+pub fn tool_schema(name: &str) -> Option<Value> {
+    match name {
+        "inert" => Some(serde_json::json!({
+            "type": "object",
+            "required": ["text"],
+            "additionalProperties": false,
+            "properties": {"text": {"type": "string", "maxUtf8Bytes": INERT_TEXT_MAX_BYTES}}
+        })),
+        _ => None,
+    }
 }
 
 fn inert_text(arguments: &Value) -> Option<&str> {
@@ -66,7 +77,7 @@ fn inert_text(arguments: &Value) -> Option<&str> {
         return None;
     }
     let text = object.get("text")?.as_str()?;
-    (text.len() <= 1024).then_some(text)
+    (text.len() <= INERT_TEXT_MAX_BYTES).then_some(text)
 }
 
 #[derive(Debug, PartialEq, Eq)]
