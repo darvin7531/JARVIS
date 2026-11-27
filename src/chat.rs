@@ -1,5 +1,5 @@
+use crate::provider::{Ollama, Request};
 use jarvis::inference::{route, Capability, DataClass, ModelProfile, RouteError, Tier};
-use jarvis::provider::{Ollama, Request};
 use serde::Deserialize;
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use std::{
@@ -313,7 +313,8 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
         max_output_bytes: config.limits.max_output_bytes,
         timeout: timeout.checked_sub(started.elapsed()).ok_or("timeout")?,
     };
-    let mut reservation = if let Some(budget) = &config.budget {
+    let budget = config.budget.as_ref().ok_or("invalid_config")?;
+    let mut reservation = {
         let amount = u64::from(budget.max_input_tokens) + u64::from(config.limits.max_tokens);
         if amount > budget.limit_tokens {
             return Err("budget_exceeded");
@@ -327,9 +328,7 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
             .reserve_tokens(budget.limit_tokens, amount)
             .map_err(|_| "budget_storage_failed")?
             .ok_or("budget_exceeded")?;
-        Some((store, id))
-    } else {
-        None
+        (store, id)
     };
     let mut failure = None;
     let result = Ollama {
@@ -344,11 +343,12 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
                 cancelled.store(true, Ordering::Relaxed);
             }
         },
-        config.budget.as_ref().map(|b| b.max_input_tokens),
+        Some(budget.max_input_tokens),
     );
-    if let Some((store, id)) = &mut reservation {
+    {
+        let (store, id) = &mut reservation;
         let known = match &result {
-            Ok(usage) | Err(jarvis::provider::Error::Incomplete(usage)) => Some(usage),
+            Ok(usage) | Err(crate::provider::Error::Incomplete(usage)) => Some(usage),
             _ => None,
         };
         if let Some(usage) = known {
@@ -362,7 +362,7 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
         }
     }
     let usage = result.map_err(|error| {
-        if let jarvis::provider::Error::Incomplete(ref usage) = error {
+        if let crate::provider::Error::Incomplete(ref usage) = error {
             eprintln!(
                 "{{\"input_tokens\":{},\"output_tokens\":{}}}",
                 usage.input_tokens, usage.output_tokens
@@ -374,9 +374,9 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
             return code;
         }
         match error {
-            jarvis::provider::Error::Cancelled => "cancelled",
-            jarvis::provider::Error::Timeout => "timeout",
-            jarvis::provider::Error::Budget | jarvis::provider::Error::Incomplete(_) => {
+            crate::provider::Error::Cancelled => "cancelled",
+            crate::provider::Error::Timeout => "timeout",
+            crate::provider::Error::Budget | crate::provider::Error::Incomplete(_) => {
                 "budget_exceeded"
             }
             _ => "inference_failed",

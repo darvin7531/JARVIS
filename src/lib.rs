@@ -13,6 +13,9 @@ pub struct Event {
 }
 
 pub mod inference;
+/// Real inference is only exposed through the policy- and budget-checked CLI.
+///
+/// ```compile_fail
+/// use jarvis::provider::{Ollama, Provider};
+/// ```
 pub mod storage;
-
-pub mod provider;

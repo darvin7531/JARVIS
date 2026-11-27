@@ -1,3 +1,7 @@
+#[allow(dead_code)]
+#[path = "../src/provider.rs"]
+mod provider;
+
 use std::{fs, process::Command};
 
 #[test]
@@ -11,7 +15,11 @@ fn missing_budget_rejects_before_connecting() {
         "limits": {"timeout_seconds":1}
     }).to_string()).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_jarvis"))
-        .args(["chat", "--config"]).arg(&path).arg("hello").output().unwrap();
+        .args(["chat", "--config"])
+        .arg(&path)
+        .arg("hello")
+        .output()
+        .unwrap();
     fs::remove_file(path).unwrap();
     assert_eq!(output.stderr, b"{\"error\":\"invalid_config\"}\n");
     assert!(listener.accept().is_err(), "connected without a budget");
@@ -130,7 +138,7 @@ fn budget_limit_is_persistent_and_cannot_be_raised_by_another_caller() {
 
 #[test]
 fn terminal_overusage_is_retained_for_settlement() {
-    use jarvis::provider::{Error, Ollama, Request};
+    use crate::provider::{Error, Ollama, Request};
     use std::{
         io::{Read, Write},
         net::TcpListener,

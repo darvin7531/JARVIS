@@ -1,4 +1,8 @@
-use jarvis::provider::{MockProvider, Provider, Request};
+#[allow(dead_code)]
+#[path = "../src/provider.rs"]
+mod provider;
+
+use crate::provider::{MockProvider, Provider, Request};
 use std::{sync::atomic::AtomicBool, time::Duration};
 
 #[test]

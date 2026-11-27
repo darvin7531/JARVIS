@@ -98,3 +98,10 @@ fn real_ollama_budgeted_cli() {
     drop(db);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+#[ignore]
+fn create_smoke_workspace() {
+    let path = std::env::var_os("JARVIS_SMOKE_WORKSPACE").unwrap();
+    drop(jarvis::storage::SqliteStore::create(std::path::Path::new(&path)).unwrap());
+}
