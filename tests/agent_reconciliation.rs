@@ -76,7 +76,8 @@ fn pending_tool_and_failed_audit_prevent_closure() {
         .query_row("SELECT closed FROM agent_runtime", [], |r| r.get(0))
         .unwrap();
     assert_eq!(closed, 0);
-    db.execute_batch("DROP TRIGGER reject_agent_audit;").unwrap();
+    db.execute_batch("DROP TRIGGER reject_agent_audit;")
+        .unwrap();
     store
         .reconcile_agent_runtime("agent", 1, ReconciliationOutcome::Succeeded, "record")
         .unwrap();
