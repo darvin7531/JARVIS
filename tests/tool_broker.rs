@@ -274,11 +274,15 @@ fn audit_write_failure_prevents_execution_and_preserves_approval() {
     ));
     let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
     store
-        .create_task(&jarvis::storage::Task {
-            id: "task".into(),
-            version: 1,
-            title: "test".into(),
-        })
+        .create_task(
+            &jarvis::storage::Task {
+                id: "task".into(),
+                version: 1,
+                title: "test".into(),
+            },
+            "created",
+            &[],
+        )
         .unwrap();
     store
         .issue_tool_approval(
