@@ -61,6 +61,9 @@ fn validate_schema(db: &Connection, version: i64) -> Result<(), StorageError> {
     if version >= 5 {
         expected.execute_batch("CREATE TABLE inference_budget (id INTEGER PRIMARY KEY, tokens INTEGER NOT NULL CHECK(tokens >= 0));")?;
     }
+    if version >= 6 {
+        expected.execute_batch("CREATE TABLE inference_budget_limit (id INTEGER PRIMARY KEY CHECK(id = 1), tokens INTEGER CHECK(tokens >= 0));")?;
+    }
     fn definitions(db: &Connection) -> Result<Vec<(String, String)>, StorageError> {
         let mut query = db.prepare(
             "SELECT name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name",
@@ -130,7 +133,7 @@ impl SqliteStore {
         db.execute_batch("PRAGMA foreign_keys = ON;")?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if !(0..=5).contains(&version) {
+        if !(0..=6).contains(&version) {
             return Err(StorageError::UnsupportedSchema);
         }
         if version > 0 {
@@ -171,6 +174,9 @@ impl SqliteStore {
         if version < 5 {
             tx.execute_batch("CREATE TABLE inference_budget (id INTEGER PRIMARY KEY, tokens INTEGER NOT NULL CHECK(tokens >= 0)); PRAGMA user_version = 5;")?;
         }
+        if version < 6 {
+            tx.execute_batch("CREATE TABLE inference_budget_limit (id INTEGER PRIMARY KEY CHECK(id = 1), tokens INTEGER CHECK(tokens >= 0)); INSERT INTO inference_budget_limit SELECT 1, NULL WHERE EXISTS (SELECT 1 FROM inference_budget); PRAGMA user_version = 6;")?;
+        }
         tx.commit()?;
         Ok(Self { db })
     }
@@ -182,12 +188,25 @@ impl SqliteStore {
         let tx = self
             .db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO inference_budget_limit (id, tokens) VALUES (1, ?1)",
+            [limit],
+        )?;
+        let matches: bool = tx.query_row(
+            "SELECT coalesce(tokens = ?1, 0) FROM inference_budget_limit WHERE id = 1",
+            [limit],
+            |r| r.get(0),
+        )?;
+        if !matches {
+            return Err(StorageError::OperationFailed);
+        }
         let used: i64 = tx.query_row(
             "SELECT coalesce(sum(tokens), 0) FROM inference_budget",
             [],
             |r| r.get(0),
         )?;
         if amount > limit || used > limit - amount {
+            tx.commit()?;
             return Ok(None);
         }
         tx.execute(

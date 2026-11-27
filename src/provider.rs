@@ -230,9 +230,13 @@ impl Ollama {
                                 value.get("prompt_eval_count").and_then(|v| v.as_u64()),
                                 value.get("eval_count").and_then(|v| v.as_u64()),
                             ) {
-                                (Some(input_tokens), Some(output_tokens))
-                                    if output_tokens <= u64::from(r.max_tokens) =>
-                                {
+                                (Some(input_tokens), Some(output_tokens)) => {
+                                    if output_tokens > u64::from(r.max_tokens)
+                                        || max_input_tokens
+                                            .is_some_and(|max| input_tokens > u64::from(max))
+                                    {
+                                        incomplete = true;
+                                    }
                                     usage = Some(Usage {
                                         input_tokens,
                                         output_tokens,
@@ -244,7 +248,16 @@ impl Ollama {
                                 }
                             }
                         }
-                        emit(text);
+                        if !(done
+                            && incomplete
+                            && (usage.as_ref().is_some_and(|u| {
+                                u.output_tokens > u64::from(r.max_tokens)
+                                    || max_input_tokens
+                                        .is_some_and(|max| u.input_tokens > u64::from(max))
+                            })))
+                        {
+                            emit(text);
+                        }
                     }
                     if let Some(e) = error {
                         break Err(e);
