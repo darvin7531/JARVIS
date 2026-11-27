@@ -10,11 +10,15 @@ struct Tool {
 }
 
 fn call(registry: &[Tool], name: &str, allowed: &[Scope], execute: &mut impl FnMut()) -> bool {
-    let _ = registry
+    if registry
         .iter()
-        .any(|tool| tool.name == name && allowed.contains(&tool.scope));
-    execute();
-    true
+        .any(|tool| tool.name == name && allowed.contains(&tool.scope))
+    {
+        execute();
+        true
+    } else {
+        false
+    }
 }
 
 #[test]
