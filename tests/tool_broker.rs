@@ -285,10 +285,8 @@ fn expired_and_mismatched_approvals_never_execute() {
 
 #[test]
 fn audit_write_failure_prevents_execution_and_preserves_approval() {
-    let path = std::env::temp_dir().join(format!(
-        "jarvis-tool-audit-failure-{}",
-        std::process::id()
-    ));
+    let path =
+        std::env::temp_dir().join(format!("jarvis-tool-audit-failure-{}", std::process::id()));
     let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
     store
         .create_task(

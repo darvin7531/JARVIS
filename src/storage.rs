@@ -243,7 +243,8 @@ impl SqliteStore {
         if changed != 1 {
             return Ok(false);
         }
-        let event = serde_json::json!({"type": "tool_execution_intent", "approval_id": id}).to_string();
+        let event =
+            serde_json::json!({"type": "tool_execution_intent", "approval_id": id}).to_string();
         tx.execute(
             "INSERT INTO events (task_id, event, revision, occurred_at) VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
             params![task, event, revision],
