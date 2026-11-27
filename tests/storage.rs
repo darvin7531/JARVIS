@@ -281,6 +281,26 @@ fn agent_runtime_has_durable_closure_separate_from_terminal() {
 }
 
 #[test]
+fn closed_agent_runtime_cannot_resume() {
+    let dir = std::env::temp_dir().join(format!("jarvis-closed-runtime-{}", std::process::id()));
+    let mut store = SqliteStore::create(&dir).unwrap();
+    let task = Task {
+        id: "closed".into(),
+        version: 1,
+        title: "closed".into(),
+    };
+    store.create_task(&task, "created", &[]).unwrap();
+    assert!(store.agent_step("closed", 1, 2, 2).unwrap());
+    store.finish_agent_step("closed", 1, false, false).unwrap();
+    let db = rusqlite::Connection::open(dir.join("jarvis.sqlite3")).unwrap();
+    db.execute("UPDATE agent_runtime SET closed = 1", []).unwrap();
+    assert!(!store.agent_step("closed", 1, 2, 2).unwrap());
+    drop(db);
+    drop(store);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn updating_task_checks_version_and_records_audit_atomically() {
     let dir = std::env::temp_dir().join(format!("jarvis-revision-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
