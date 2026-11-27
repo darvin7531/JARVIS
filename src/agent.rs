@@ -254,7 +254,6 @@ pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'stat
     }
     let observed = broker.call_cancellable(&read, &cancelled);
     drop(broker);
-    let mut store = SqliteStore::open(&owner.store).map_err(|_| "agent_verification_incomplete")?;
     let status = match observed {
         Ok(value) if value == owner.expected => "verified",
         Ok(_) => "verification_failed",
@@ -263,13 +262,19 @@ pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'stat
         }
         Err(_) => "verification_incomplete",
     };
+    let storage_error = if status == "verification_uncertain" {
+        "agent_verification_uncertain"
+    } else {
+        "agent_verification_incomplete"
+    };
+    let mut store = SqliteStore::open(&owner.store).map_err(|_| storage_error)?;
     store
         .append_event_at_revision(
             &owner.task,
             owner.revision,
             &serde_json::json!({"type":"checkpoint", "status":status}).to_string(),
         )
-        .map_err(|_| "agent_verification_incomplete")?;
+        .map_err(|_| storage_error)?;
     if status == "verification_uncertain" {
         return Err("agent_verification_uncertain");
     }

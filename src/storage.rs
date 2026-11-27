@@ -298,10 +298,18 @@ impl SqliteStore {
         revision: i64,
         request: &crate::tool_policy::ToolRequest,
         contract_expires: std::time::SystemTime,
-    ) -> Result<bool, StorageError> {
+    ) -> Result<Option<bool>, StorageError> {
         let tx = self
             .db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let pending: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tool_executions WHERE pending = 1)",
+            [],
+            |row| row.get(0),
+        )?;
+        if pending {
+            return Ok(None);
+        }
         if matches!(request.tool.as_str(), "read" | "write") {
             let mismatch: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM mock_state WHERE resource = ?1 AND (data_class IS NULL OR data_class != ?2))",
@@ -309,7 +317,7 @@ impl SqliteStore {
                 |row| row.get(0),
             )?;
             if mismatch {
-                return Ok(false);
+                return Ok(Some(false));
             }
         }
         let request = serde_json::to_string(request).map_err(|_| StorageError::OperationFailed)?;
@@ -321,11 +329,11 @@ impl SqliteStore {
         )
         .map_err(|_| StorageError::OperationFailed)?;
         if std::time::SystemTime::now() >= contract_expires {
-            return Ok(false);
+            return Ok(Some(false));
         }
         let changed = tx.execute("UPDATE tool_approvals SET consumed = 1 WHERE id = ?1 AND task_id = ?2 AND revision = ?3 AND request = ?4 AND expires > ?5 AND consumed = 0 AND EXISTS (SELECT 1 FROM tasks WHERE id = ?2 AND version = ?3) AND NOT EXISTS (SELECT 1 FROM agent_runtime WHERE task_id = ?2 AND revision = ?3 AND closed = 1)", params![id, task, revision, request, now])?;
         if changed != 1 {
-            return Ok(false);
+            return Ok(Some(false));
         }
         // A backup marker blocks admission until omitted work is reconciled.
         let reserved = tx.execute(
@@ -333,7 +341,7 @@ impl SqliteStore {
             [],
         )?;
         if reserved != 1 {
-            return Ok(false);
+            return Ok(Some(false));
         }
         // ponytail: one in-flight tool call per workspace; use per-resource
         // reconciliation before allowing concurrent executions.
@@ -348,7 +356,7 @@ impl SqliteStore {
             params![task, event, revision],
         )?;
         tx.commit()?;
-        Ok(true)
+        Ok(Some(true))
     }
 
     pub(crate) fn tool_approval_is_fresh(&self, id: &str) -> Result<bool, StorageError> {

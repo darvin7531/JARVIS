@@ -196,11 +196,10 @@ impl Broker {
             return Err(BrokerError::Denied);
         }
         let (store, id, task, revision) = self.approval.as_mut().ok_or(BrokerError::Denied)?;
-        if !store
-            .consume_tool_approval(id, task, *revision, request, contract.expires_at)
-            .unwrap_or(false)
-        {
-            return Err(BrokerError::Denied);
+        match store.consume_tool_approval(id, task, *revision, request, contract.expires_at) {
+            Ok(Some(true)) => {}
+            Ok(None) => return Err(BrokerError::ReconciliationRequired),
+            _ => return Err(BrokerError::Denied),
         }
         // A consumed approval remains pending on a failed freshness check; the
         // owner must reconcile the durable intent before any further call.
