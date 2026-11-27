@@ -64,3 +64,18 @@ For agent runtime recovery, the trusted owner must stop **all** clients, preserv
 API backups block agent steps and tool calls through the existing pending restore marker. Before clearing that marker, reconcile **all** agent steps, inference usage and tool calls omitted since the snapshot; account for exhausted agent limits, increase `tool_budget.used` accordingly without exceeding its limit, and invalidate any approvals whose status is uncertain. If omitted work cannot be established, leave the restored workspace blocked. Backups predating the marker and external copies cannot be recognized as rollbacks and must be quarantined and reconciled before use.
 
 The fixed registry also provides mock `write` and `read` tools, operating only on SQLite `mock_state`, never on host resources. Both require matching action, resource, data class, scope, contract and single-use approval; write accepts `{ "text": "..." }` up to 1024 UTF-8 bytes, read accepts `{ "text": "" }` and returns the stored value (empty if absent). Mock values and their data classifications persist in workspace backups and are plaintext; use non-secret data. Existing values can be read or overwritten only with the same classification; classification changes are not supported. Values migrated from the older unclassified schema remain inaccessible to brokered reads and writes, including sensitive requests; the trusted owner must handle them outside the broker. Failed dispatch or outcome recording leaves the intent pending for owner reconciliation, as with inert calls. This is an in-process trusted-owner boundary, not a sandbox.
+
+### Configured owner agent inference
+
+`jarvis agent --owner OWNER.json --config CHAT.json` uses the same configured
+routing, trust assertions, timeout, input/output bounds, and persisted token
+budget as `chat --config`. The owner file's `data_class` classifies the entire
+context; sensitive data requires a model explicitly trusted for local handling.
+The owner context must request a JSON proposal: `{"kind":"continue"}` or
+`{"kind":"tool","request":...}`. Model output remains provisional until the
+stream completes successfully with valid usage; it never grants tool authority.
+The independently issued, exact one-shot owner approvals still gate the write
+and verification read. The existing `--mock-response` mode remains deterministic.
+An interrupted inference may leave a pending step or budget reservation requiring
+reconciliation; cancellation cannot retract already-sent bytes. Model compliance
+with the proposal schema is not guaranteed.

@@ -118,3 +118,26 @@ fn configured_proposals_require_complete_stream_and_exact_approval() {
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[test]
+fn sensitive_owner_never_reaches_untrusted_model() {
+    use jarvis::storage::{SqliteStore, Task};
+    use std::net::TcpListener;
+    let root = std::env::temp_dir().join(format!("configured-sensitive-{}", std::process::id()));
+    let mut store = SqliteStore::create(&root).unwrap();
+    store.create_task(&Task { id: "task".into(), version: 1, title: "test".into() }, "created", &[]).unwrap();
+    drop(store);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let owner = json!({"store":root,"task":"task","revision":1,"approval":"write","read_approval":"read","resource":"mock/item","data_class":"sensitive","permitted_text":"x","expected":"x","expires_unix":4102444800_u64,"context":"secret"});
+    let config = json!({"models":[{"name":"model","tier":"t1","capabilities":["text"],"allowed_data":["sensitive"],"trusted_no_truncation":true,"port":listener.local_addr().unwrap().port()}],"budget":{"workspace":root,"limit_tokens":1000,"max_input_tokens":200}});
+    let owner_path = root.join("owner.json");
+    let config_path = root.join("config.json");
+    std::fs::write(&owner_path, owner.to_string()).unwrap();
+    std::fs::write(&config_path, config.to_string()).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_jarvis")).args(["agent","--owner"]).arg(owner_path).arg("--config").arg(config_path).output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("data_not_allowed"));
+    assert!(listener.accept().is_err());
+    std::fs::remove_dir_all(root).unwrap();
+}
