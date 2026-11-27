@@ -725,7 +725,7 @@ fn contract_expiring_during_intent_commit_never_dispatches() {
     let mut short = contract();
     short.expires_at = SystemTime::now() + Duration::from_millis(100);
     let mut broker = Broker::with_approval(short, store, "one".into(), "task".into(), 1);
-    assert_eq!(broker.call(&request()), Err(BrokerError::Denied));
+    assert_eq!(broker.call(&request()), Err(BrokerError::ReconciliationRequired));
     assert_eq!(broker.executions(), 0);
 }
 

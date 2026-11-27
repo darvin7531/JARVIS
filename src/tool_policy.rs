@@ -53,6 +53,8 @@ pub enum BrokerError {
     InvalidResource,
     Denied,
     InvalidArguments,
+    Cancelled,
+    ReconciliationRequired,
     OutcomeUncertain,
 }
 
@@ -163,7 +165,7 @@ impl Broker {
     ) -> Result<String, BrokerError> {
         use std::sync::atomic::Ordering;
         if cancelled.load(Ordering::Relaxed) {
-            return Err(BrokerError::Denied);
+            return Err(BrokerError::Cancelled);
         }
         let tool = validate_tool(&request.tool, &request.arguments)?;
         if request.resource.is_empty() || request.resource.len() > 128 {
@@ -206,7 +208,7 @@ impl Broker {
             || SystemTime::now() >= contract.expires_at
             || cancelled.load(Ordering::Relaxed)
         {
-            return Err(BrokerError::Denied);
+            return Err(BrokerError::ReconciliationRequired);
         }
         self.executions += 1;
         let result = match tool {
