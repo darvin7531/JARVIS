@@ -72,7 +72,17 @@ fn closed_stdout_reports_failure_on_shutdown() {
     let mut started = String::new();
     stdout.read_line(&mut started).unwrap();
     assert_eq!(started, "{\"event\":\"started\"}\n");
+    let pipe = std::fs::read_link(format!("/proc/{}/fd/1", child.0.id())).unwrap();
     drop(stdout);
+    for process in std::fs::read_dir("/proc").unwrap().flatten() {
+        if let Ok(fds) = std::fs::read_dir(process.path().join("fd")) {
+            for fd in fds.flatten() {
+                if std::fs::read_link(fd.path()).ok().as_ref() == Some(&pipe) {
+                    eprintln!("[stdout-debug] pid={} fd={}", process.file_name().to_string_lossy(), fd.file_name().to_string_lossy());
+                }
+            }
+        }
+    }
     child.0.stdin.take().unwrap().write_all(b"\n").unwrap();
     assert!(
         !wait(&mut child).success(),
