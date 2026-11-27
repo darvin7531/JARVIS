@@ -5,6 +5,9 @@ pub enum Scope {
 }
 
 pub fn permits(tool: &str, allowed: &[Scope]) -> bool {
-    let _ = (tool, allowed);
-    false
+    match tool {
+        "read" => allowed.contains(&Scope::Read),
+        "write" => allowed.contains(&Scope::Write),
+        _ => false,
+    }
 }
