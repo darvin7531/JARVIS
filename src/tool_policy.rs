@@ -153,6 +153,18 @@ impl Broker {
     }
 
     pub fn call(&mut self, request: &ToolRequest) -> Result<String, BrokerError> {
+        self.call_cancellable(request, &std::sync::atomic::AtomicBool::new(false))
+    }
+
+    pub fn call_cancellable(
+        &mut self,
+        request: &ToolRequest,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<String, BrokerError> {
+        use std::sync::atomic::Ordering;
+        if cancelled.load(Ordering::Relaxed) {
+            return Err(BrokerError::Denied);
+        }
         let tool = validate_tool(&request.tool, &request.arguments)?;
         if request.resource.is_empty() || request.resource.len() > 128 {
             return Err(BrokerError::InvalidResource);
@@ -192,6 +204,7 @@ impl Broker {
         // owner must reconcile the durable intent before any further call.
         if !store.tool_approval_is_fresh(id).unwrap_or(false)
             || SystemTime::now() >= contract.expires_at
+            || cancelled.load(Ordering::Relaxed)
         {
             return Err(BrokerError::Denied);
         }
