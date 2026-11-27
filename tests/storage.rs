@@ -155,7 +155,7 @@ fn opens_existing_schema_idempotently() {
     let version: i64 = db
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
     drop(db);
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -314,7 +314,7 @@ fn migrates_v1_database_forward_without_losing_records() {
     let version: i64 = db
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
     drop(db);
     std::fs::remove_dir_all(dir).unwrap();
 }

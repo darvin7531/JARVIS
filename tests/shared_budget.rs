@@ -158,3 +158,58 @@ fn terminal_overusage_is_retained_for_settlement() {
     }
     assert!(text.is_empty());
 }
+
+#[test]
+fn cli_settles_overusage_and_blocks_next_request() {
+    use jarvis::storage::SqliteStore;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+    };
+    for (input, output) in [(2, 20), (20, 2)] {
+        let root =
+            std::env::temp_dir().join(format!("jarvis-overusage-{}-{input}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        drop(SqliteStore::create(&root).unwrap());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let config = root.join("config.json");
+        fs::write(&config, serde_json::json!({
+            "models":[{"name":"model","tier":"t1","capabilities":["text"],"allowed_data":["public"],"port":listener.local_addr().unwrap().port()}],
+            "limits":{"max_tokens":5},
+            "budget":{"workspace":root,"limit_tokens":20,"max_input_tokens":10}
+        }).to_string()).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0; 4096];
+            stream.read(&mut buf).unwrap();
+            let body = format!("{{\"response\":\"unsafe\",\"done\":true,\"done_reason\":\"stop\",\"prompt_eval_count\":{input},\"eval_count\":{output}}}\n");
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+        });
+        let run = || {
+            Command::new(env!("CARGO_BIN_EXE_jarvis"))
+                .args(["chat", "--config"])
+                .arg(&config)
+                .arg("hello")
+                .output()
+                .unwrap()
+        };
+        let result = run();
+        server.join().unwrap();
+        assert!(!result.status.success());
+        assert!(result.stdout.is_empty());
+        let db = rusqlite::Connection::open(root.join("jarvis.sqlite3")).unwrap();
+        let tokens: i64 = db
+            .query_row("SELECT sum(tokens) FROM inference_budget", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(tokens, input + output);
+        assert_eq!(run().stderr, b"{\"error\":\"budget_exceeded\"}\n");
+        drop(db);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
