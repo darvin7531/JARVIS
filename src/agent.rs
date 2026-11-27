@@ -40,9 +40,14 @@ pub fn approve(path: &OsStr) -> Result<(), &'static str> {
     });
     let serialized = serde_json::to_string(&details).map_err(|_| "agent_input")?;
     // Escape non-ASCII too, so bidi and other terminal controls cannot mislead.
-    let safe: String = serialized.chars().flat_map(|c| {
-        if c.is_ascii() { c.to_string() } else { c.escape_unicode().to_string() }
-    }).collect();
+    let mut safe = String::new();
+    for c in serialized.chars() {
+        if c.is_ascii() {
+            safe.push(c);
+        } else {
+            safe.extend(c.escape_unicode());
+        }
+    }
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     writeln!(out, "{safe}\nType approve to issue; anything else denies:")
