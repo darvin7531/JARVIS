@@ -1,3 +1,4 @@
+use jarvis::storage::ReconciliationOutcome;
 use jarvis::tool_policy::{Broker, BrokerError, DataClass, Scope, TaskContract, ToolRequest};
 use serde_json::{json, Value};
 use std::time::{Duration, SystemTime};
@@ -528,7 +529,7 @@ fn failed_outcome_write_blocks_further_calls_after_reopen() {
     drop(broker);
     let mut store = jarvis::storage::SqliteStore::open(&path).unwrap();
     db.execute_batch("CREATE TRIGGER reject_reconciliation BEFORE INSERT ON events WHEN NEW.event LIKE '%tool_execution_reconciliation%' BEGIN SELECT RAISE(ABORT, 'failed'); END;").unwrap();
-    assert!(store.reconcile_tool_execution("one").is_err());
+    assert!(store.reconcile_tool_execution("one", ReconciliationOutcome::Succeeded).is_err());
     let pending: i64 = db
         .query_row(
             "SELECT pending FROM tool_executions WHERE approval_id = 'one'",
@@ -539,9 +540,9 @@ fn failed_outcome_write_blocks_further_calls_after_reopen() {
     assert_eq!(pending, 1);
     db.execute_batch("DROP TRIGGER reject_reconciliation;")
         .unwrap();
-    store.reconcile_tool_execution("one").unwrap();
-    assert!(store.reconcile_tool_execution("one").is_err());
-    assert!(store.reconcile_tool_execution("missing").is_err());
+    store.reconcile_tool_execution("one", ReconciliationOutcome::Succeeded).unwrap();
+    assert!(store.reconcile_tool_execution("one", ReconciliationOutcome::Succeeded).is_err());
+    assert!(store.reconcile_tool_execution("missing", ReconciliationOutcome::Unknown).is_err());
     let event: String = db.query_row("SELECT event FROM events WHERE event LIKE '%tool_execution_reconciliation%' AND task_id = 'task' AND revision = 1", [], |r| r.get(0)).unwrap();
     let event: Value = serde_json::from_str(&event).unwrap();
     assert_eq!(event["approval_id"], "one");

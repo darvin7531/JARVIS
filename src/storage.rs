@@ -23,6 +23,15 @@ pub struct AuditEvent {
     pub occurred_at: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReconciliationOutcome {
+    Succeeded,
+    Failed,
+    NotExecuted,
+    Unknown,
+}
+
 #[derive(Debug)]
 pub enum StorageError {
     OperationFailed,
@@ -341,8 +350,13 @@ impl SqliteStore {
         Ok(())
     }
 
-    /// Trusted owner resolves an uncertain tool execution without replay.
-    pub fn reconcile_tool_execution(&mut self, id: &str) -> Result<(), StorageError> {
+    /// Trusted owner only: stop all clients, preserve a backup, and obtain
+    /// exclusive maintenance access before resolving without replay or refund.
+    pub fn reconcile_tool_execution(
+        &mut self,
+        id: &str,
+        outcome: ReconciliationOutcome,
+    ) -> Result<(), StorageError> {
         let tx = self
             .db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -358,7 +372,7 @@ impl SqliteStore {
         {
             return Err(StorageError::OperationFailed);
         }
-        let event = serde_json::json!({"type": "tool_execution_reconciliation", "approval_id": id, "outcome": "unknown"}).to_string();
+        let event = serde_json::json!({"type": "tool_execution_reconciliation", "approval_id": id, "outcome": outcome}).to_string();
         tx.execute(
             "INSERT INTO events (task_id, event, revision, occurred_at) VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
             params![task, event, revision],
