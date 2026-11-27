@@ -284,6 +284,33 @@ fn expired_and_mismatched_approvals_never_execute() {
 }
 
 #[test]
+fn backup_does_not_revive_pending_approval() {
+    let root = std::env::temp_dir().join(format!("jarvis-approval-backup-{}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut store = jarvis::storage::SqliteStore::create(&root.join("workspace")).unwrap();
+    create_task(&mut store);
+    store
+        .issue_tool_approval(
+            "one",
+            "task",
+            1,
+            &request(),
+            SystemTime::now() + Duration::from_secs(60),
+        )
+        .unwrap();
+    let snapshot = root.join("snapshot");
+    store.backup(&snapshot).unwrap();
+    let mut original = Broker::with_approval(contract(), store, "one".into(), "task".into(), 1);
+    assert_eq!(original.call(&request()), Ok("hello".into()));
+    let restored = jarvis::storage::SqliteStore::open(&snapshot).unwrap();
+    let mut replay = Broker::with_approval(contract(), restored, "one".into(), "task".into(), 1);
+    assert_eq!(replay.call(&request()), Err(BrokerError::Denied));
+    assert_eq!(replay.executions(), 0);
+}
+
+#[test]
 fn approval_rejected_after_task_revision_changes() {
     let path = std::env::temp_dir().join(format!("jarvis-approval-stale-{}", std::process::id()));
     let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
