@@ -379,7 +379,8 @@ fn stalled_version_check_obeys_deadline_and_cancellation() {
         let mut r = request();
         r.timeout = Duration::from_millis(250);
         thread::scope(|scope| {
-            scope.spawn(|| {
+            let flag = &flag;
+            scope.spawn(move || {
                 ready_rx.recv().unwrap();
                 if cancel {
                     flag.store(true, std::sync::atomic::Ordering::Relaxed);
