@@ -256,6 +256,18 @@ impl SqliteStore {
         request: &crate::tool_policy::ToolRequest,
         expires: std::time::SystemTime,
     ) -> Result<(), StorageError> {
+        self.issue_tool_approval_cancellable(id, task, revision, request, expires, None)
+    }
+
+    pub fn issue_tool_approval_cancellable(
+        &mut self,
+        id: &str,
+        task: &str,
+        revision: i64,
+        request: &crate::tool_policy::ToolRequest,
+        expires: std::time::SystemTime,
+        cancelled: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<(), StorageError> {
         let expires = i64::try_from(
             expires
                 .duration_since(std::time::UNIX_EPOCH)
@@ -284,7 +296,9 @@ impl SqliteStore {
                 .as_secs(),
         )
         .map_err(|_| StorageError::OperationFailed)?;
-        if expires <= now {
+        if expires <= now
+            || cancelled.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+        {
             return Err(StorageError::OperationFailed);
         }
         let changed = tx.execute("INSERT INTO tool_approvals (id, task_id, revision, request, expires) SELECT ?1, id, version, ?4, ?5 FROM tasks WHERE id = ?2 AND version = ?3", params![id, task, revision, request, expires])?;

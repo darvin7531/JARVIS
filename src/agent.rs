@@ -27,13 +27,18 @@ struct ApprovalInput {
 }
 
 pub fn approve(path: &OsStr) -> Result<(), &'static str> {
-    use std::io::{BufRead, Write};
+    use std::os::fd::AsRawFd;
     let input: ApprovalInput =
         serde_json::from_str(&bounded_file(path)?).map_err(|_| "agent_input")?;
     let expires = UNIX_EPOCH
         .checked_add(Duration::from_secs(input.expires_unix))
         .filter(|expiry| *expiry > SystemTime::now())
         .ok_or("agent_input")?;
+    let cancelled = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&cancelled))
+        .map_err(|_| "agent_signal")?;
+    signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&cancelled))
+        .map_err(|_| "agent_signal")?;
     let details = serde_json::json!({
         "store": input.store, "task": input.task, "revision": input.revision, "approval": input.approval,
         "expires_unix": input.expires_unix, "request": input.request,
@@ -48,31 +53,77 @@ pub fn approve(path: &OsStr) -> Result<(), &'static str> {
             safe.extend(c.escape_unicode());
         }
     }
-    let stdout = std::io::stdout();
-    let mut out = stdout.lock();
-    writeln!(out, "{safe}\nType approve to issue; anything else denies:")
-        .and_then(|_| out.flush())
-        .map_err(|_| "agent_output")?;
+    let out = approval_fd(1, true)?;
+    let message = format!("{safe}\nType approve to issue; anything else denies:\n");
+    let mut remaining = message.as_bytes();
+    while !remaining.is_empty() {
+        approval_ready(out.as_raw_fd(), libc::POLLOUT, expires, &cancelled)?;
+        let n = unsafe { libc::write(out.as_raw_fd(), remaining.as_ptr().cast(), remaining.len()) };
+        if n > 0 {
+            remaining = &remaining[n as usize..];
+        } else if n == 0 || !matches!(std::io::Error::last_os_error().kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) {
+            return Err("agent_output");
+        }
+    }
+    let input_fd = approval_fd(0, false)?;
     let mut decision = Vec::new();
-    std::io::stdin()
-        .lock()
-        .take(16)
-        .read_until(b'\n', &mut decision)
-        .map_err(|_| "agent_input")?;
+    while decision.len() < 16 && !decision.ends_with(b"\n") {
+        approval_ready(input_fd.as_raw_fd(), libc::POLLIN, expires, &cancelled)?;
+        let mut byte = 0u8;
+        let n = unsafe { libc::read(input_fd.as_raw_fd(), (&mut byte as *mut u8).cast(), 1) };
+        if n == 0 { break; }
+        if n < 0 {
+            if matches!(std::io::Error::last_os_error().kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) { continue; }
+            return Err("agent_input");
+        }
+        decision.push(byte);
+    }
     if decision != b"approve\n" {
         return Err("agent_denied");
     }
     let mut store = SqliteStore::open(&input.store).map_err(|_| "agent_storage")?;
     store
-        .issue_tool_approval(
+        .issue_tool_approval_cancellable(
             &input.approval,
             &input.task,
             input.revision,
             &input.request,
             expires,
+            Some(&cancelled),
         )
         .map_err(|_| "agent_storage")?;
     Ok(())
+}
+
+fn approval_fd(fd: i32, output: bool) -> Result<std::fs::File, &'static str> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } != 0 {
+        return Err("agent_io");
+    }
+    let mode = unsafe { stat.assume_init() }.st_mode & libc::S_IFMT;
+    if !matches!(mode, libc::S_IFIFO | libc::S_IFREG | libc::S_IFCHR) {
+        return Err("agent_io");
+    }
+    std::fs::OpenOptions::new()
+        .read(!output)
+        .write(output)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(format!("/proc/self/fd/{fd}"))
+        .map_err(|_| "agent_io")
+}
+
+fn approval_ready(fd: i32, events: i16, expires: SystemTime, cancelled: &AtomicBool) -> Result<(), &'static str> {
+    loop {
+        if cancelled.load(Ordering::Relaxed) { return Err("cancelled"); }
+        if SystemTime::now() >= expires { return Err("timeout"); }
+        let mut pollfd = libc::pollfd { fd, events, revents: 0 };
+        let n = unsafe { libc::poll(&mut pollfd, 1, 50) };
+        if n > 0 { return Ok(()); }
+        if n < 0 && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+            return Err("agent_io");
+        }
+    }
 }
 
 // This file is trusted owner input, not model output. The owner must separately
