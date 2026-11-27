@@ -42,6 +42,8 @@ jobs:
           assert usage["input_tokens"] > 0 and 0 < usage["output_tokens"] <= 128, usage
           print("\nCLI usage:", usage)
           ' "$RUNNER_TEMP/chat.json"
+      - name: Run real configured-agent approved tool smoke
+        run: cargo test --locked --test agent_configured real_ollama_configured_agent_approved_tool -- --ignored --exact
       - name: Run budgeted real-model CLI
         run: for i in 1 2 3; do cargo test --locked --test budget_safety real_ollama_budgeted_cli -- --ignored --exact; done
       - name: Confirm oversized prompt is accepted when truncation is enabled
