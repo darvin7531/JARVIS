@@ -363,17 +363,56 @@ fn pending_execution_blocks_task_revision_across_connections() {
     let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
     create_task(&mut store);
     store.initialize_tool_budget(10).unwrap();
-    store.issue_tool_approval("one", "task", 1, &request(), SystemTime::now() + Duration::from_secs(60)).unwrap();
+    store
+        .issue_tool_approval(
+            "one",
+            "task",
+            1,
+            &request(),
+            SystemTime::now() + Duration::from_secs(60),
+        )
+        .unwrap();
     let mut other = jarvis::storage::SqliteStore::open(&path).unwrap();
     let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
     db.execute_batch("CREATE TRIGGER reject_outcome BEFORE UPDATE OF pending ON tool_executions BEGIN SELECT RAISE(ABORT, 'outcome failed'); END;").unwrap();
     let mut broker = Broker::with_approval(contract(), store, "one".into(), "task".into(), 1);
     assert_eq!(broker.call(&request()), Err(BrokerError::OutcomeUncertain));
-    let changed = jarvis::storage::Task { id: "task".into(), version: 2, title: "changed".into() };
+    let changed = jarvis::storage::Task {
+        id: "task".into(),
+        version: 2,
+        title: "changed".into(),
+    };
     assert!(other.update_task(&changed, "updated").is_err());
     assert_eq!(other.task("task").unwrap().unwrap().version, 1);
     db.execute_batch("DROP TRIGGER reject_outcome; UPDATE tool_executions SET pending = 0 WHERE approval_id = 'one';").unwrap();
     other.update_task(&changed, "updated").unwrap();
+}
+
+#[test]
+fn restored_tool_budget_includes_omitted_calls() {
+    let path =
+        std::env::temp_dir().join(format!("jarvis-restore-tool-budget-{}", std::process::id()));
+    let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
+    create_task(&mut store);
+    store.initialize_tool_budget(1).unwrap();
+    let snapshot = path.join("snapshot");
+    store.backup(&snapshot).unwrap();
+    let mut restored = jarvis::storage::SqliteStore::open(&snapshot).unwrap();
+    restored
+        .issue_tool_approval(
+            "one",
+            "task",
+            1,
+            &request(),
+            SystemTime::now() + Duration::from_secs(60),
+        )
+        .unwrap();
+    let mut blocked = Broker::with_approval(contract(), restored, "one".into(), "task".into(), 1);
+    assert_eq!(blocked.call(&request()), Err(BrokerError::Denied));
+    let db = rusqlite::Connection::open(snapshot.join("jarvis.sqlite3")).unwrap();
+    db.execute_batch("BEGIN EXCLUSIVE; UPDATE tool_budget SET used = 1 WHERE id = 1; UPDATE inference_budget SET tokens = 5, pending = 0 WHERE id = -1; COMMIT;").unwrap();
+    assert_eq!(blocked.call(&request()), Err(BrokerError::Denied));
+    assert_eq!(blocked.executions(), 0);
 }
 
 #[test]
