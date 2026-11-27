@@ -1,0 +1,17 @@
+name: Privacy regression RED
+on: [push]
+permissions:
+  contents: read
+jobs:
+  regressions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc
+        with:
+          toolchain: 1.89.0
+      - name: Privacy regression
+        run: cargo test --locked --test configured_chat untrusted_loopback_rejects_nonpublic_data_before_connecting
+      - name: Length regression
+        if: always()
+        run: cargo test --locked --test provider_ollama length_finish_is_incomplete_and_preserves_usage
