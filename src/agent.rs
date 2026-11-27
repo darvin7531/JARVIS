@@ -8,7 +8,10 @@ use std::{
     ffi::OsStr,
     io::Read,
     path::PathBuf,
-    sync::{atomic::{AtomicBool, Ordering}, Arc},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::Instant,
 };
 
@@ -75,7 +78,8 @@ pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'stat
     // The process exits after this command; cancellation cannot retract a dispatched call.
     let _signals = (int, term);
     let response = bounded_file(response_file)?;
-    let scripted: serde_json::Value = serde_json::from_str(&response).map_err(|_| "agent_inference")?;
+    let scripted: serde_json::Value =
+        serde_json::from_str(&response).map_err(|_| "agent_inference")?;
     let responses = match scripted {
         serde_json::Value::Array(items) => items,
         item => vec![item],
@@ -101,7 +105,13 @@ pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'stat
         let mut output = String::new();
         provider
             .generate(&request, &cancelled, &mut |chunk| output.push_str(chunk))
-            .map_err(|_| if cancelled.load(Ordering::Relaxed) { "cancelled" } else { "agent_inference" })?;
+            .map_err(|_| {
+                if cancelled.load(Ordering::Relaxed) {
+                    "cancelled"
+                } else {
+                    "agent_inference"
+                }
+            })?;
         // Legacy single-request input remains supported but never supplies authority.
         let parsed = serde_json::from_str::<Proposal>(&output).or_else(|_| {
             serde_json::from_str::<ToolRequest>(&output).map(|request| Proposal::Tool { request })
@@ -111,7 +121,7 @@ pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'stat
                 proposal = Some(request);
                 break;
             }
-            Ok(Proposal::Continue) => {},
+            Ok(Proposal::Continue) => {}
             Err(_) => {
                 failures += 1;
                 if failures >= owner.max_failures {
