@@ -73,6 +73,9 @@ fn validate_schema(db: &Connection, version: i64) -> Result<(), StorageError> {
     if version >= 9 {
         expected.execute_batch("CREATE TABLE tool_budget (id INTEGER PRIMARY KEY CHECK(id = 1), call_limit INTEGER NOT NULL CHECK(call_limit >= 0), used INTEGER NOT NULL DEFAULT 0 CHECK(used >= 0 AND used <= call_limit));")?;
     }
+    if version >= 10 {
+        expected.execute_batch("CREATE TABLE tool_executions (approval_id TEXT PRIMARY KEY NOT NULL REFERENCES tool_approvals(id), pending INTEGER NOT NULL CHECK(pending IN (0, 1))); ")?;
+    }
     fn definitions(db: &Connection) -> Result<Vec<(String, String)>, StorageError> {
         let mut query = db.prepare(
             "SELECT name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name",
@@ -142,7 +145,7 @@ impl SqliteStore {
         db.execute_batch("PRAGMA foreign_keys = ON;")?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if !(0..=9).contains(&version) {
+        if !(0..=10).contains(&version) {
             return Err(StorageError::UnsupportedSchema);
         }
         if version > 0 {
@@ -194,6 +197,9 @@ impl SqliteStore {
         }
         if version < 9 {
             tx.execute_batch("CREATE TABLE tool_budget (id INTEGER PRIMARY KEY CHECK(id = 1), call_limit INTEGER NOT NULL CHECK(call_limit >= 0), used INTEGER NOT NULL DEFAULT 0 CHECK(used >= 0 AND used <= call_limit)); PRAGMA user_version = 9;")?;
+        }
+        if version < 10 {
+            tx.execute_batch("CREATE TABLE tool_executions (approval_id TEXT PRIMARY KEY NOT NULL REFERENCES tool_approvals(id), pending INTEGER NOT NULL CHECK(pending IN (0, 1))); INSERT INTO tool_executions SELECT id, 1 FROM tool_approvals WHERE consumed = 1; PRAGMA user_version = 10;")?;
         }
         tx.commit()?;
         Ok(Self { db })
@@ -272,12 +278,18 @@ impl SqliteStore {
         }
         // A backup marker blocks admission until omitted work is reconciled.
         let reserved = tx.execute(
-            "UPDATE tool_budget SET used = used + 1 WHERE id = 1 AND used < call_limit AND NOT EXISTS (SELECT 1 FROM inference_budget WHERE id = -1 AND pending = 1)",
+            "UPDATE tool_budget SET used = used + 1 WHERE id = 1 AND used < call_limit AND NOT EXISTS (SELECT 1 FROM inference_budget WHERE id = -1 AND pending = 1) AND NOT EXISTS (SELECT 1 FROM tool_executions WHERE pending = 1)",
             [],
         )?;
         if reserved != 1 {
             return Ok(false);
         }
+        // ponytail: one in-flight tool call per workspace; use per-resource
+        // reconciliation before allowing concurrent executions.
+        tx.execute(
+            "INSERT INTO tool_executions (approval_id, pending) VALUES (?1, 1)",
+            [id],
+        )?;
         let event =
             serde_json::json!({"type": "tool_execution_intent", "approval_id": id}).to_string();
         tx.execute(
@@ -295,10 +307,21 @@ impl SqliteStore {
         revision: i64,
     ) -> Result<(), StorageError> {
         let event = serde_json::json!({"type": "tool_execution_outcome", "approval_id": id, "outcome": "succeeded"}).to_string();
-        self.db.execute(
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if tx.execute(
+            "UPDATE tool_executions SET pending = 0 WHERE approval_id = ?1 AND pending = 1",
+            [id],
+        )? != 1
+        {
+            return Err(StorageError::OperationFailed);
+        }
+        tx.execute(
             "INSERT INTO events (task_id, event, revision, occurred_at) VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
             params![task, event, revision],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
