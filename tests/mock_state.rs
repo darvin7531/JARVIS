@@ -206,3 +206,64 @@ fn sensitive_value_cannot_be_read_as_public() {
 fn sensitive_value_cannot_be_overwritten_as_public() {
     sensitive_then_public("write");
 }
+
+#[test]
+fn legacy_unclassified_values_cannot_be_read_or_overwritten() {
+    let path = std::env::temp_dir().join(format!("jarvis-legacy-class-{}", std::process::id()));
+    let mut store = SqliteStore::create(&path).unwrap();
+    store
+        .create_task(
+            &Task {
+                id: "task".into(),
+                version: 1,
+                title: "test".into(),
+            },
+            "created",
+            &[],
+        )
+        .unwrap();
+    store.initialize_tool_budget(8).unwrap();
+    drop(store);
+    let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
+    db.execute_batch("ALTER TABLE mock_state DROP COLUMN data_class; INSERT INTO mock_state VALUES ('mock/item', 'legacy secret'); PRAGMA user_version = 11;").unwrap();
+    drop(db);
+    for (tool, scope, text) in [
+        ("read", Scope::Read, ""),
+        ("write", Scope::Write, "replacement"),
+    ] {
+        for (id, class) in [
+            ("public", DataClass::Public),
+            ("sensitive", DataClass::Sensitive),
+        ] {
+            let mut store = SqliteStore::open(&path).unwrap();
+            let mut req = request(tool, tool, text);
+            req.data_class = class;
+            let mut allowed = contract(tool, tool, scope, text);
+            allowed.data_class = class;
+            let approval = format!("{tool}-{id}");
+            store
+                .issue_tool_approval(
+                    &approval,
+                    "task",
+                    1,
+                    &req,
+                    SystemTime::now() + Duration::from_secs(120),
+                )
+                .unwrap();
+            let mut broker = Broker::with_approval(allowed, store, approval, "task".into(), 1);
+            assert_eq!(broker.call(&req), Err(BrokerError::Denied));
+            assert_eq!(broker.executions(), 0);
+        }
+    }
+    let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
+    let row: (String, Option<String>) = db
+        .query_row(
+            "SELECT value, data_class FROM mock_state WHERE resource = 'mock/item'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(row, ("legacy secret".into(), None));
+    drop(db);
+    std::fs::remove_dir_all(path).unwrap();
+}

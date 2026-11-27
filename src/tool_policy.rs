@@ -199,11 +199,11 @@ impl Broker {
         let result = match tool {
             RegisteredTool::Inert { text } => text,
             RegisteredTool::Read { .. } => store
-                .mock_read(&request.resource)
+                .mock_read(&request.resource, request.data_class)
                 .map_err(|_| BrokerError::OutcomeUncertain)?,
             RegisteredTool::Write { text } => {
                 store
-                    .mock_write(&request.resource, &text)
+                    .mock_write(&request.resource, &text, request.data_class)
                     .map_err(|_| BrokerError::OutcomeUncertain)?;
                 text
             }

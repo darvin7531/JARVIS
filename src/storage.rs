@@ -90,6 +90,9 @@ fn validate_schema(db: &Connection, version: i64) -> Result<(), StorageError> {
             "CREATE TABLE mock_state (resource TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL);",
         )?;
     }
+    if version >= 12 {
+        expected.execute_batch("ALTER TABLE mock_state ADD COLUMN data_class TEXT CHECK(data_class IN ('public', 'sensitive'));")?;
+    }
     fn definitions(db: &Connection) -> Result<Vec<(String, String)>, StorageError> {
         let mut query = db.prepare(
             "SELECT name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name",
@@ -113,6 +116,13 @@ fn validate_schema(db: &Connection, version: i64) -> Result<(), StorageError> {
 
 pub struct SqliteStore {
     db: Connection,
+}
+
+fn mock_class(class: crate::tool_policy::DataClass) -> &'static str {
+    match class {
+        crate::tool_policy::DataClass::Public => "public",
+        crate::tool_policy::DataClass::Sensitive => "sensitive",
+    }
 }
 
 impl SqliteStore {
@@ -159,7 +169,7 @@ impl SqliteStore {
         db.execute_batch("PRAGMA foreign_keys = ON;")?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if !(0..=11).contains(&version) {
+        if !(0..=12).contains(&version) {
             return Err(StorageError::UnsupportedSchema);
         }
         if version > 0 {
@@ -218,6 +228,9 @@ impl SqliteStore {
         if version < 11 {
             tx.execute_batch("CREATE TABLE mock_state (resource TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL); PRAGMA user_version = 11;")?;
         }
+        if version < 12 {
+            tx.execute_batch("ALTER TABLE mock_state ADD COLUMN data_class TEXT CHECK(data_class IN ('public', 'sensitive')); PRAGMA user_version = 12;")?;
+        }
         tx.commit()?;
         Ok(Self { db })
     }
@@ -274,10 +287,20 @@ impl SqliteStore {
         request: &crate::tool_policy::ToolRequest,
         contract_expires: std::time::SystemTime,
     ) -> Result<bool, StorageError> {
-        let request = serde_json::to_string(request).map_err(|_| StorageError::OperationFailed)?;
         let tx = self
             .db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if matches!(request.tool.as_str(), "read" | "write") {
+            let mismatch: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM mock_state WHERE resource = ?1 AND (data_class IS NULL OR data_class != ?2))",
+                params![request.resource, mock_class(request.data_class)],
+                |row| row.get(0),
+            )?;
+            if mismatch {
+                return Ok(false);
+            }
+        }
+        let request = serde_json::to_string(request).map_err(|_| StorageError::OperationFailed)?;
         let now = i64::try_from(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -332,21 +355,37 @@ impl SqliteStore {
         Ok(expires > now)
     }
 
-    pub(crate) fn mock_write(&self, resource: &str, value: &str) -> Result<(), StorageError> {
-        self.db.execute("INSERT INTO mock_state (resource, value) VALUES (?1, ?2) ON CONFLICT(resource) DO UPDATE SET value = excluded.value", params![resource, value])?;
+    pub(crate) fn mock_write(
+        &self,
+        resource: &str,
+        value: &str,
+        class: crate::tool_policy::DataClass,
+    ) -> Result<(), StorageError> {
+        let changed = self.db.execute("INSERT INTO mock_state (resource, value, data_class) VALUES (?1, ?2, ?3) ON CONFLICT(resource) DO UPDATE SET value = excluded.value WHERE mock_state.data_class = excluded.data_class", params![resource, value, mock_class(class)])?;
+        if changed != 1 {
+            return Err(StorageError::OperationFailed);
+        }
         Ok(())
     }
 
-    pub(crate) fn mock_read(&self, resource: &str) -> Result<String, StorageError> {
-        Ok(self
+    pub(crate) fn mock_read(
+        &self,
+        resource: &str,
+        class: crate::tool_policy::DataClass,
+    ) -> Result<String, StorageError> {
+        let row: Option<(String, Option<String>)> = self
             .db
             .query_row(
-                "SELECT value FROM mock_state WHERE resource = ?1",
+                "SELECT value, data_class FROM mock_state WHERE resource = ?1",
                 [resource],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
-            .optional()?
-            .unwrap_or_default())
+            .optional()?;
+        match row {
+            None => Ok(String::new()),
+            Some((value, Some(stored))) if stored == mock_class(class) => Ok(value),
+            _ => Err(StorageError::OperationFailed),
+        }
     }
 
     pub(crate) fn record_tool_outcome(
