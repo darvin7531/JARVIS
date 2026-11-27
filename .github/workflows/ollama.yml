@@ -37,6 +37,8 @@ jobs:
           assert usage["input_tokens"] > 0 and 0 < usage["output_tokens"] <= 128, usage
           print("\nCLI usage:", usage)
           ' "$RUNNER_TEMP/chat.json"
+      - name: Run budgeted real-model CLI
+        run: cargo test --locked --test budget_safety real_ollama_budgeted_cli -- --ignored
       - name: Stop runner
         if: always()
         run: docker rm -f ollama || true

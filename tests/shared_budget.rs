@@ -47,7 +47,7 @@ fn concurrent_processes_settle_and_retain_unknown_usage() {
     let server = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
         let mut buf = [0; 4096];
-        stream.read(&mut buf).unwrap();
+        assert!(stream.read(&mut buf).unwrap() > 0);
         ready_tx.send(()).unwrap();
         release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
         let body = "{\"response\":\"ok\",\"done\":true,\"done_reason\":\"stop\",\"prompt_eval_count\":2,\"eval_count\":1}\n";
@@ -60,7 +60,7 @@ fn concurrent_processes_settle_and_retain_unknown_usage() {
         .unwrap();
         drop(stream);
         let (mut stream, _) = listener.accept().unwrap();
-        stream.read(&mut buf).unwrap();
+        assert!(stream.read(&mut buf).unwrap() > 0);
         write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").unwrap();
     });
     let spawn = || {
