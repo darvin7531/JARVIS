@@ -12,6 +12,7 @@ jobs:
         with:
           toolchain: 1.89.0
           components: rustfmt, clippy
+      - run: cargo test --locked --test tool_broker contract_expiring_during_intent_commit_never_dispatches
       - run: cargo test --locked --test tool_broker approval_rejects_oversized_arguments
       - run: cargo test --locked --test tool_broker approval_cannot_be_issued_for_missing_or_stale_task
       - run: cargo test --locked --test tool_broker backup_does_not_revive_pending_approval
