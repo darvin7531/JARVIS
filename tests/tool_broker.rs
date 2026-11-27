@@ -727,7 +727,7 @@ fn owner_reconciliation_records_each_factual_outcome() {
             .unwrap();
         store = jarvis::storage::SqliteStore::open(&path).unwrap();
         store.reconcile_tool_execution(id, outcome).unwrap();
-        let event: String = db.query_row("SELECT event FROM events WHERE task_id = 'task' AND revision = 1 AND json_extract(event, '$.type') = 'tool_execution_reconciliation' AND json_extract(event, '$.approval_id') = ?1", [id], |r| r.get(0)).unwrap();
+        let event: String = db.query_row("SELECT event FROM events WHERE task_id = 'task' AND revision = 1 AND CASE WHEN json_valid(event) THEN json_extract(event, '$.type') = 'tool_execution_reconciliation' AND json_extract(event, '$.approval_id') = ?1 ELSE 0 END", [id], |r| r.get(0)).unwrap();
         let event: Value = serde_json::from_str(&event).unwrap();
         assert_eq!(event["outcome"], expected);
         assert!(store.reconcile_tool_execution(id, outcome).is_err());
