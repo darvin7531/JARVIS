@@ -6,7 +6,10 @@ use std::{
     ffi::OsString,
     fs::File,
     io::{Read, Write},
-    sync::{atomic::AtomicBool, Arc},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
@@ -14,6 +17,24 @@ use std::{
 #[serde(deny_unknown_fields)]
 struct Config {
     models: Vec<Model>,
+    #[serde(default)]
+    limits: Limits,
+}
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct Limits {
+    max_tokens: u32,
+    max_output_bytes: usize,
+    timeout_seconds: u64,
+}
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_tokens: 128,
+            max_output_bytes: 65536,
+            timeout_seconds: 120,
+        }
+    }
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -61,7 +82,13 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
         return Err("invalid_config");
     }
     let config: Config = serde_json::from_slice(&bytes).map_err(|_| "invalid_config")?;
-    let mut selected_tier = Tier::T1;
+    if config.limits.max_tokens == 0
+        || config.limits.max_output_bytes == 0
+        || config.limits.timeout_seconds == 0
+    {
+        return Err("invalid_config");
+    }
+    let mut selected_tier = None;
     let mut manual = None;
     let mut required = Capability::Text;
     let mut class = DataClass::Public;
@@ -85,7 +112,7 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
             .into_string()
             .map_err(|_| "invalid_arguments")?;
         match arg.as_str() {
-            "--tier" => selected_tier = tier(&value).ok_or("invalid_arguments")?,
+            "--tier" => selected_tier = Some(tier(&value).ok_or("invalid_arguments")?),
             "--model" => manual = Some(value),
             "--require" => required = capability(&value).ok_or("invalid_arguments")?,
             "--data" => class = data(&value).ok_or("invalid_arguments")?,
@@ -95,6 +122,11 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
     if args.next().is_some() {
         return Err("invalid_arguments");
     }
+    // This transport accepts text prompts only; profile labels cannot add modalities.
+    if required != Capability::Text {
+        return Err("capability_unavailable");
+    }
+    let selected_tier = selected_tier.unwrap_or_else(|| jarvis::inference::classify(&prompt));
     let mut caps = Vec::new();
     let mut classes = Vec::new();
     let mut tiers = Vec::new();
@@ -146,9 +178,9 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
     let req = Request {
         model: selected.name,
         prompt: &prompt,
-        max_tokens: 128,
-        max_output_bytes: 65536,
-        timeout: Duration::from_secs(120),
+        max_tokens: config.limits.max_tokens,
+        max_output_bytes: config.limits.max_output_bytes,
+        timeout: Duration::from_secs(config.limits.timeout_seconds),
     };
     let mut failed = false;
     let usage = Ollama {
@@ -162,9 +194,21 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
             .is_err()
         {
             failed = true;
+            cancelled.store(true, Ordering::Relaxed);
         }
     })
-    .map_err(|_| "inference_failed")?;
+    .map_err(|error| {
+        eprintln!("{{\"usage\":null}}");
+        if failed {
+            return "output_failed";
+        }
+        match error {
+            jarvis::provider::Error::Cancelled => "cancelled",
+            jarvis::provider::Error::Timeout => "timeout",
+            jarvis::provider::Error::Budget => "budget_exceeded",
+            _ => "inference_failed",
+        }
+    })?;
     if failed {
         return Err("output_failed");
     }
