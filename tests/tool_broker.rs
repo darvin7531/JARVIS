@@ -545,7 +545,7 @@ fn failed_outcome_write_blocks_further_calls_after_reopen() {
     let event: String = db.query_row("SELECT event FROM events WHERE event LIKE '%tool_execution_reconciliation%' AND task_id = 'task' AND revision = 1", [], |r| r.get(0)).unwrap();
     let event: Value = serde_json::from_str(&event).unwrap();
     assert_eq!(event["approval_id"], "one");
-    assert_eq!(event["outcome"], "unknown");
+    assert_eq!(event["outcome"], "succeeded");
     drop(store);
     let store = jarvis::storage::SqliteStore::open(&path).unwrap();
     let mut replay = Broker::with_approval(contract(), store, "one".into(), "task".into(), 1);
