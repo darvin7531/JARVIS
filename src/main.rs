@@ -70,7 +70,19 @@ fn run() -> Result<(), Error> {
     let mut args = env::args_os().skip(1).peekable();
     if args.peek().is_some_and(|arg| arg == "agent") {
         args.next();
-        if args.next().is_none_or(|arg| arg != "--mock")
+        let mode = args.next().ok_or(Error::InvalidArguments)?;
+        if mode == "--owner" {
+            let owner = args.next().ok_or(Error::InvalidArguments)?;
+            if args.next().is_none_or(|arg| arg != "--mock-response") {
+                return Err(Error::InvalidArguments);
+            }
+            let response = args.next().ok_or(Error::InvalidArguments)?;
+            if args.next().is_some() {
+                return Err(Error::InvalidArguments);
+            }
+            return agent::run_owner(&owner, &response).map_err(Error::Chat);
+        }
+        if mode != "--mock"
             || args.next().is_none_or(|arg| arg != "diagnose")
             || args.next().is_some()
         {

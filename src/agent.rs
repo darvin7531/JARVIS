@@ -2,6 +2,147 @@ use jarvis::storage::{SqliteStore, Task};
 use jarvis::tool_policy::{Broker, DataClass, Scope, TaskContract, ToolRequest};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::provider::{MockProvider, Provider, Request};
+use serde::Deserialize;
+use std::{
+    ffi::OsStr,
+    io::Read,
+    path::PathBuf,
+    sync::{atomic::AtomicBool, Arc},
+    time::Instant,
+};
+
+// This file is trusted owner input, not model output. The owner must separately
+// provision the task, budget and exact one-shot approvals in the store.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Owner {
+    store: PathBuf,
+    task: String,
+    revision: i64,
+    approval: String,
+    read_approval: String,
+    resource: String,
+    data_class: DataClass,
+    permitted_text: String,
+    expected: String,
+    expires_unix: u64,
+    context: String,
+}
+
+fn bounded_file(path: &OsStr) -> Result<String, &'static str> {
+    let mut data = String::new();
+    crate::open_config(path)
+        .map_err(|_| "agent_input")?
+        .take(crate::MAX_CONFIG_BYTES + 1)
+        .read_to_string(&mut data)
+        .map_err(|_| "agent_input")?;
+    if data.len() as u64 > crate::MAX_CONFIG_BYTES {
+        return Err("agent_input");
+    }
+    Ok(data)
+}
+
+pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'static str> {
+    let owner: Owner =
+        serde_json::from_str(&bounded_file(owner_file)?).map_err(|_| "agent_input")?;
+    let expires = UNIX_EPOCH
+        .checked_add(Duration::from_secs(owner.expires_unix))
+        .ok_or("agent_input")?;
+    let response = bounded_file(response_file)?;
+    let provider = MockProvider::new(&response);
+    let request = Request {
+        model: "mock",
+        prompt: &owner.context,
+        max_tokens: 1024,
+        max_output_bytes: 65536,
+        deadline: Instant::now() + Duration::from_secs(10),
+    };
+    let mut output = String::new();
+    provider
+        .generate(&request, &Arc::new(AtomicBool::new(false)), &mut |chunk| {
+            output.push_str(chunk)
+        })
+        .map_err(|_| "agent_inference")?;
+    let proposal: ToolRequest = serde_json::from_str(&output).map_err(|_| "agent_inference")?;
+    let contract = TaskContract {
+        scopes: vec![Scope::Write],
+        tool: "write".into(),
+        action: "write".into(),
+        resource: owner.resource.clone(),
+        denied_resources: vec![],
+        data_class: owner.data_class,
+        permitted_text: owner.permitted_text,
+        expires_at: expires,
+    };
+    let store = SqliteStore::open(&owner.store).map_err(|_| "agent_storage")?;
+    let mut broker = Broker::with_approval(
+        contract,
+        store,
+        owner.approval,
+        owner.task.clone(),
+        owner.revision,
+    );
+    let outcome = broker.call(&proposal);
+    drop(broker);
+    if outcome.is_err() {
+        let mut store = SqliteStore::open(&owner.store).map_err(|_| "agent_storage")?;
+        store
+            .append_event(
+                &owner.task,
+                r#"{"type":"checkpoint","status":"denied_or_failed"}"#,
+            )
+            .map_err(|_| "agent_storage")?;
+        return Err("agent_tool");
+    }
+    // Independent broker read, with a separate owner-issued approval. The write
+    // result is not used as verification and the store is reopened first.
+    let read = ToolRequest {
+        tool: "read".into(),
+        action: "read".into(),
+        resource: owner.resource.clone(),
+        data_class: owner.data_class,
+        arguments: serde_json::json!({"text":""}),
+    };
+    let read_contract = TaskContract {
+        scopes: vec![Scope::Read],
+        tool: "read".into(),
+        action: "read".into(),
+        resource: owner.resource,
+        denied_resources: vec![],
+        data_class: owner.data_class,
+        permitted_text: String::new(),
+        expires_at: expires,
+    };
+    let store = SqliteStore::open(&owner.store).map_err(|_| "agent_storage")?;
+    let mut broker = Broker::with_approval(
+        read_contract,
+        store,
+        owner.read_approval,
+        owner.task.clone(),
+        owner.revision,
+    );
+    let observed = broker.call(&read).map_err(|_| "agent_verify")?;
+    drop(broker);
+    let mut store = SqliteStore::open(&owner.store).map_err(|_| "agent_storage")?;
+    let status = if observed == owner.expected {
+        "verified"
+    } else {
+        "verification_failed"
+    };
+    store
+        .append_event(
+            &owner.task,
+            &serde_json::json!({"type":"checkpoint", "status":status}).to_string(),
+        )
+        .map_err(|_| "agent_storage")?;
+    if status != "verified" {
+        return Err("agent_verify");
+    }
+    println!("{}", serde_json::json!({"status":status}));
+    Ok(())
+}
+
 // This tracer is deliberately limited to an empty, isolated mock resource.
 // ponytail: one read-only scenario; add owner-supplied contracts for other tasks.
 pub fn run() -> Result<(), &'static str> {
