@@ -65,6 +65,15 @@ pub(crate) fn inert_text(arguments: &Value) -> Option<&str> {
     (text.len() <= 1024).then_some(text)
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum RegisteredTool {
+    Inert { text: String },
+}
+
+pub fn validate_tool(_name: &str, _arguments: &Value) -> Result<RegisteredTool, BrokerError> {
+    Err(BrokerError::UnknownTool)
+}
+
 // The owner must keep broker construction outside the untrusted request path.
 // This in-process boundary does not authenticate callers or isolate processes.
 pub struct Broker {

@@ -12,6 +12,7 @@ jobs:
         with:
           toolchain: 1.89.0
           components: rustfmt, clippy
+      - run: cargo test --locked --test broker_registry_red fixed_registry_validates_typed_inert_arguments -- --exact
       - run: cargo test --locked --test tool_broker failed_outcome_write_blocks_further_calls_after_reopen -- --exact
       - run: cargo test --locked --test tool_broker pending_execution_blocks_task_revision_across_connections
       - run: cargo test --locked --test tool_broker contract_expiring_during_intent_commit_never_dispatches

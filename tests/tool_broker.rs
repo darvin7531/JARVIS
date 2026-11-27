@@ -529,9 +529,16 @@ fn failed_outcome_write_blocks_further_calls_after_reopen() {
     let mut store = jarvis::storage::SqliteStore::open(&path).unwrap();
     db.execute_batch("CREATE TRIGGER reject_reconciliation BEFORE INSERT ON events WHEN NEW.event LIKE '%tool_execution_reconciliation%' BEGIN SELECT RAISE(ABORT, 'failed'); END;").unwrap();
     assert!(store.reconcile_tool_execution("one").is_err());
-    let pending: i64 = db.query_row("SELECT pending FROM tool_executions WHERE approval_id = 'one'", [], |r| r.get(0)).unwrap();
+    let pending: i64 = db
+        .query_row(
+            "SELECT pending FROM tool_executions WHERE approval_id = 'one'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(pending, 1);
-    db.execute_batch("DROP TRIGGER reject_reconciliation;").unwrap();
+    db.execute_batch("DROP TRIGGER reject_reconciliation;")
+        .unwrap();
     store.reconcile_tool_execution("one").unwrap();
     assert!(store.reconcile_tool_execution("one").is_err());
     assert!(store.reconcile_tool_execution("missing").is_err());

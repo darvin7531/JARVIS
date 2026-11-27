@@ -342,13 +342,19 @@ impl SqliteStore {
 
     /// Trusted owner resolves an uncertain tool execution without replay.
     pub fn reconcile_tool_execution(&mut self, id: &str) -> Result<(), StorageError> {
-        let tx = self.db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let (task, revision): (String, i64) = tx.query_row(
             "SELECT a.task_id, a.revision FROM tool_approvals a JOIN tool_executions e ON e.approval_id = a.id WHERE a.id = ?1 AND a.consumed = 1 AND e.pending = 1",
             [id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        if tx.execute("UPDATE tool_executions SET pending = 0 WHERE approval_id = ?1 AND pending = 1", [id])? != 1 {
+        if tx.execute(
+            "UPDATE tool_executions SET pending = 0 WHERE approval_id = ?1 AND pending = 1",
+            [id],
+        )? != 1
+        {
             return Err(StorageError::OperationFailed);
         }
         let event = serde_json::json!({"type": "tool_execution_reconciliation", "approval_id": id, "outcome": "unknown"}).to_string();
