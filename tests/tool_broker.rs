@@ -782,8 +782,8 @@ fn cancellation_before_dispatch_preserves_approval() {
     use std::sync::atomic::AtomicBool;
     let mut broker = approved(contract(), request());
     assert_eq!(
-        broker.call_cancellable(&request(), &AtomicBool::new(true)),
-        Err(BrokerError::Denied)
+        format!("{:?}", broker.call_cancellable(&request(), &AtomicBool::new(true))),
+        "Err(Cancelled)"
     );
     assert_eq!(broker.executions(), 0);
     assert_eq!(broker.call(&request()), Ok("hello".into()));
