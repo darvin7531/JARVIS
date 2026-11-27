@@ -36,8 +36,8 @@ impl Error {
 }
 
 fn run() -> Result<(), Error> {
-    let mut args = env::args_os().skip(1);
-    if args.clone().next().is_some_and(|arg| arg == "chat") {
+    let mut args = env::args_os().skip(1).peekable();
+    if args.peek().is_some_and(|arg| arg == "chat") {
         args.next();
         if args.next().is_none_or(|arg| arg != "--mock") {
             return Err(Error::InvalidArguments);
