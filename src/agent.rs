@@ -8,7 +8,7 @@ use std::{
     ffi::OsStr,
     io::Read,
     path::PathBuf,
-    sync::{atomic::AtomicBool, Arc},
+    sync::{atomic::{AtomicBool, Ordering}, Arc},
     time::Instant,
 };
 
@@ -28,6 +28,21 @@ struct Owner {
     expected: String,
     expires_unix: u64,
     context: String,
+    #[serde(default = "one")]
+    max_steps: u32,
+    #[serde(default = "one")]
+    max_failures: u32,
+}
+
+fn one() -> u32 {
+    1
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum Proposal {
+    Continue,
+    Tool { request: ToolRequest },
 }
 
 fn bounded_file(path: &OsStr) -> Result<String, &'static str> {
@@ -49,22 +64,68 @@ pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'stat
     let expires = UNIX_EPOCH
         .checked_add(Duration::from_secs(owner.expires_unix))
         .ok_or("agent_input")?;
+    if !(1..=32).contains(&owner.max_steps) || !(1..=32).contains(&owner.max_failures) {
+        return Err("agent_input");
+    }
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let int = signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&cancelled))
+        .map_err(|_| "agent_signal")?;
+    let term = signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&cancelled))
+        .map_err(|_| "agent_signal")?;
+    // The process exits after this command; cancellation cannot retract a dispatched call.
+    let _signals = (int, term);
     let response = bounded_file(response_file)?;
-    let provider = MockProvider::new(&response);
-    let request = Request {
-        model: "mock",
-        prompt: &owner.context,
-        max_tokens: 1024,
-        max_output_bytes: 65536,
-        deadline: Instant::now() + Duration::from_secs(10),
+    let scripted: serde_json::Value = serde_json::from_str(&response).map_err(|_| "agent_inference")?;
+    let responses = match scripted {
+        serde_json::Value::Array(items) => items,
+        item => vec![item],
     };
-    let mut output = String::new();
-    provider
-        .generate(&request, &Arc::new(AtomicBool::new(false)), &mut |chunk| {
-            output.push_str(chunk)
-        })
-        .map_err(|_| "agent_inference")?;
-    let proposal: ToolRequest = serde_json::from_str(&output).map_err(|_| "agent_inference")?;
+    let mut proposal = None;
+    let mut failures = 0;
+    for (index, item) in responses.into_iter().enumerate() {
+        if index >= owner.max_steps as usize {
+            break;
+        }
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("cancelled");
+        }
+        let text = item.to_string();
+        let provider = MockProvider::new(&text);
+        let request = Request {
+            model: "mock",
+            prompt: &owner.context,
+            max_tokens: 1024,
+            max_output_bytes: 65536,
+            deadline: Instant::now() + Duration::from_secs(10),
+        };
+        let mut output = String::new();
+        provider
+            .generate(&request, &cancelled, &mut |chunk| output.push_str(chunk))
+            .map_err(|_| if cancelled.load(Ordering::Relaxed) { "cancelled" } else { "agent_inference" })?;
+        // Legacy single-request input remains supported but never supplies authority.
+        let parsed = serde_json::from_str::<Proposal>(&output).or_else(|_| {
+            serde_json::from_str::<ToolRequest>(&output).map(|request| Proposal::Tool { request })
+        });
+        match parsed {
+            Ok(Proposal::Tool { request }) => {
+                proposal = Some(request);
+                break;
+            }
+            Ok(Proposal::Continue) => {},
+            Err(_) => {
+                failures += 1;
+                if failures >= owner.max_failures {
+                    return Err("agent_failures");
+                }
+            }
+        }
+        let mut store = SqliteStore::open(&owner.store).map_err(|_| "agent_storage")?;
+        store.append_event(&owner.task, &serde_json::json!({"type":"checkpoint", "status":"thinking", "steps":index + 1, "failures":failures}).to_string()).map_err(|_| "agent_storage")?;
+    }
+    let proposal = proposal.ok_or("agent_steps")?;
+    if cancelled.load(Ordering::Relaxed) {
+        return Err("cancelled");
+    }
     let contract = TaskContract {
         scopes: vec![Scope::Write],
         tool: "write".into(),
@@ -83,6 +144,9 @@ pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'stat
         owner.task.clone(),
         owner.revision,
     );
+    if cancelled.load(Ordering::Relaxed) {
+        return Err("cancelled");
+    }
     let outcome = broker.call(&proposal);
     drop(broker);
     if outcome.is_err() {
@@ -122,6 +186,9 @@ pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'stat
         owner.task.clone(),
         owner.revision,
     );
+    if cancelled.load(Ordering::Relaxed) {
+        return Err("cancelled");
+    }
     let observed = broker.call(&read).map_err(|_| "agent_verify")?;
     drop(broker);
     let mut store = SqliteStore::open(&owner.store).map_err(|_| "agent_storage")?;
