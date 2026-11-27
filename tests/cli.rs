@@ -59,6 +59,28 @@ fn event(receiver: &mpsc::Receiver<String>, name: &str) {
 }
 
 #[test]
+fn closed_stdout_reports_failure_on_shutdown() {
+    let mut child = Process(
+        Command::new(env!("CARGO_BIN_EXE_jarvis"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut stdout = BufReader::new(child.0.stdout.take().unwrap());
+    let mut started = String::new();
+    stdout.read_line(&mut started).unwrap();
+    assert_eq!(started, "{\"event\":\"started\"}\n");
+    drop(stdout);
+    child.0.stdin.take().unwrap().write_all(b"\n").unwrap();
+    assert!(!wait(&mut child).success(), "closed stdout was reported as success");
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(&mut child.0.stderr.take().unwrap(), &mut stderr).unwrap();
+    assert_eq!(stderr, "{\"error\":\"output_failed\"}\n");
+}
+
+#[test]
 fn newline_stops_service() {
     let (mut child, output) = spawn(None, Stdio::piped());
     event(&output, "started");
