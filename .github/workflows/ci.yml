@@ -12,6 +12,7 @@ jobs:
         with:
           toolchain: 1.89.0
           components: rustfmt, clippy
+      - run: cargo test --locked --test tool_broker approval_rejected_after_task_revision_changes
       - run: cargo test --locked --test tool_broker audit_write_failure_prevents_execution_and_preserves_approval
       - run: cargo build --locked
       - run: cargo fmt --all -- --check

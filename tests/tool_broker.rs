@@ -284,6 +284,38 @@ fn expired_and_mismatched_approvals_never_execute() {
 }
 
 #[test]
+fn approval_rejected_after_task_revision_changes() {
+    let path = std::env::temp_dir().join(format!(
+        "jarvis-approval-stale-{}",
+        std::process::id()
+    ));
+    let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
+    create_task(&mut store);
+    store
+        .issue_tool_approval(
+            "one",
+            "task",
+            1,
+            &request(),
+            SystemTime::now() + Duration::from_secs(60),
+        )
+        .unwrap();
+    store
+        .update_task(
+            &jarvis::storage::Task {
+                id: "task".into(),
+                version: 2,
+                title: "changed".into(),
+            },
+            "updated",
+        )
+        .unwrap();
+    let mut broker = Broker::with_approval(contract(), store, "one".into(), "task".into(), 1);
+    assert_eq!(broker.call(&request()), Err(BrokerError::Denied));
+    assert_eq!(broker.executions(), 0);
+}
+
+#[test]
 fn audit_write_failure_prevents_execution_and_preserves_approval() {
     let path =
         std::env::temp_dir().join(format!("jarvis-tool-audit-failure-{}", std::process::id()));
