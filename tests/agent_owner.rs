@@ -141,6 +141,13 @@ fn owner_loop_skips_non_action_and_stops_after_verified_write() {
             .output()
             .unwrap()
     };
+    let mut limited = owner.clone();
+    limited["max_steps"] = json!(1);
+    std::fs::write(&owner_path, limited.to_string()).unwrap();
+    let exhausted = run("approved");
+    assert!(!exhausted.status.success());
+    assert!(String::from_utf8_lossy(&exhausted.stderr).contains("agent_steps"));
+    std::fs::write(&owner_path, owner.to_string()).unwrap();
     let denied = run("forged");
     assert!(!denied.status.success());
     let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
