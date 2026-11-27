@@ -28,8 +28,11 @@ fn deadline_elapsing_before_dispatch_never_connects() {
     r.timeout = Duration::from_millis(100);
     thread::sleep(Duration::from_millis(200));
     assert_eq!(
-        Ollama { port: listener.local_addr().unwrap().port(), trusted_no_truncation: true }
-            .generate(&r, &AtomicBool::new(false), &mut |_| {}),
+        Ollama {
+            port: listener.local_addr().unwrap().port(),
+            trusted_no_truncation: true
+        }
+        .generate(&r, &AtomicBool::new(false), &mut |_| {}),
         Err(Error::Timeout)
     );
     assert!(listener.accept().is_err(), "expired request connected");
