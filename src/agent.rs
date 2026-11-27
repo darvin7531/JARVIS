@@ -426,6 +426,56 @@ mod tests {
     }
 
     #[test]
+    fn existing_pending_tool_requires_agent_reconciliation() {
+        let path =
+            std::env::temp_dir().join(format!("agent-existing-pending-{}", std::process::id()));
+        let mut store = SqliteStore::create(&path).unwrap();
+        store
+            .create_task(
+                &Task {
+                    id: "task".into(),
+                    version: 1,
+                    title: "test".into(),
+                },
+                "created",
+                &[],
+            )
+            .unwrap();
+        store.initialize_tool_budget(4).unwrap();
+        let expires = SystemTime::now() + Duration::from_secs(300);
+        let request = ToolRequest {
+            tool: "write".into(),
+            action: "write".into(),
+            resource: "mock/item".into(),
+            data_class: DataClass::Public,
+            arguments: json!({"text":"value"}),
+        };
+        for id in ["pending", "write"] {
+            store
+                .issue_tool_approval(id, "task", 1, &request, expires)
+                .unwrap();
+        }
+        drop(store);
+        let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
+        db.execute_batch("UPDATE tool_approvals SET consumed = 1 WHERE id = 'pending'; UPDATE tool_budget SET used = 1; INSERT INTO tool_executions (approval_id, pending) VALUES ('pending', 1);").unwrap();
+        drop(db);
+        let owner = json!({"store":path, "task":"task", "revision":1, "approval":"write", "read_approval":"missing", "resource":"mock/item", "data_class":"public", "permitted_text":"value", "expected":"value", "expires_unix":expires.duration_since(UNIX_EPOCH).unwrap().as_secs(), "context":"test"});
+        let owner_path = path.join("owner.json");
+        let proposal_path = path.join("proposal.json");
+        std::fs::write(&owner_path, owner.to_string()).unwrap();
+        std::fs::write(&proposal_path, serde_json::to_string(&request).unwrap()).unwrap();
+        assert_eq!(
+            run_owner(owner_path.as_os_str(), proposal_path.as_os_str()),
+            Err("agent_reconciliation_required")
+        );
+        let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
+        let state: (i64, i64, i64, i64) = db.query_row("SELECT (SELECT pending FROM tool_executions WHERE approval_id = 'pending'), (SELECT consumed FROM tool_approvals WHERE id = 'write'), (SELECT used FROM tool_budget), (SELECT count(*) FROM mock_state)", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
+        assert_eq!(state, (1, 0, 1, 0));
+        drop(db);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn post_dispatch_outcome_failure_is_uncertain_and_never_replayed() {
         let path = std::env::temp_dir().join(format!("agent-post-dispatch-{}", std::process::id()));
         let mut store = SqliteStore::create(&path).unwrap();
