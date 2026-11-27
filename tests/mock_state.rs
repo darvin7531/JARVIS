@@ -157,6 +157,18 @@ fn sensitive_then_public(tool: &str) {
     assert_eq!(broker.call(&secret), Ok("secret".into()));
     drop(broker);
     let mut store = SqliteStore::open(&path).unwrap();
+    let backup = path.join("backup");
+    store.backup(&backup).unwrap();
+    let snapshot = rusqlite::Connection::open(backup.join("jarvis.sqlite3")).unwrap();
+    let saved: (String, String) = snapshot
+        .query_row(
+            "SELECT value, data_class FROM mock_state WHERE resource = 'mock/item'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(saved, ("secret".into(), "sensitive".into()));
+    drop(snapshot);
     let (scope, text) = if tool == "read" {
         (Scope::Read, "")
     } else {
@@ -179,10 +191,26 @@ fn sensitive_then_public(tool: &str) {
         "task".into(),
         1,
     );
-    assert!(
-        broker.call(&public).is_err(),
-        "public {tool} must be denied"
-    );
+    assert_eq!(broker.call(&public), Err(BrokerError::Denied));
+    assert_eq!(broker.executions(), 0);
+    drop(broker);
+    let mut store = SqliteStore::open(&path).unwrap();
+    let mut read = request("read", "read", "");
+    read.data_class = DataClass::Sensitive;
+    let mut allowed = contract("read", "read", Scope::Read, "");
+    allowed.data_class = DataClass::Sensitive;
+    store
+        .issue_tool_approval(
+            "sensitive-read",
+            "task",
+            1,
+            &read,
+            SystemTime::now() + Duration::from_secs(120),
+        )
+        .unwrap();
+    let mut broker =
+        Broker::with_approval(allowed, store, "sensitive-read".into(), "task".into(), 1);
+    assert_eq!(broker.call(&read), Ok("secret".into()));
     drop(broker);
     let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
     let value: String = db
