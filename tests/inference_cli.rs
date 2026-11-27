@@ -21,3 +21,14 @@ fn real_chat_requires_explicit_api_key() {
     assert!(!output.status.success());
     assert_eq!(output.stderr, b"{\"error\":\"missing_api_key\"}\n");
 }
+
+#[test]
+fn mock_route_rejects_unsupported_capability() {
+    let output = Command::new(env!("CARGO_BIN_EXE_jarvis"))
+        .env_clear()
+        .args(["chat", "--mock", "--require", "vision", "hello"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert_eq!(output.stderr, b"{\"error\":\"capability_unavailable\"}\n");
+}
