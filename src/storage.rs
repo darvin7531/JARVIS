@@ -239,7 +239,7 @@ impl SqliteStore {
     pub fn settle_tokens(&mut self, id: i64, tokens: u64) -> Result<(), StorageError> {
         let tokens = i64::try_from(tokens).map_err(|_| StorageError::OperationFailed)?;
         if self.db.execute(
-            "UPDATE inference_budget SET tokens = ?1, pending = 0 WHERE id = ?2 AND pending = 1",
+            "UPDATE inference_budget SET tokens = ?1, pending = 0 WHERE id = ?2 AND id != -1 AND pending = 1",
             params![tokens, id],
         )? != 1
         {
