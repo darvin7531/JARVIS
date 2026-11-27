@@ -1,3 +1,4 @@
+mod common;
 use std::{
     fs,
     io::{Read, Write},
@@ -47,6 +48,7 @@ fn sensitive_stdin_reaches_provider() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let path = config(listener.local_addr().unwrap().port(), 5, "stdin");
     let server = thread::spawn(move || {
+        common::accept_version(&listener);
         let (mut socket, _) = listener.accept().unwrap();
         socket
             .set_read_timeout(Some(Duration::from_secs(5)))
@@ -126,6 +128,7 @@ fn full_stdout_pipe_respects_sigint_and_timeout() {
         );
         let (tx, rx) = std::sync::mpsc::channel();
         let server = thread::spawn(move || {
+            common::accept_version(&listener);
             let (mut socket, _) = listener.accept().unwrap();
             socket
                 .set_write_timeout(Some(Duration::from_secs(3)))
@@ -189,6 +192,7 @@ fn length_finish_reports_usage_and_budget_error() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let path = config(listener.local_addr().unwrap().port(), 5, "length");
     let server = thread::spawn(move || {
+        common::accept_version(&listener);
         let (mut socket, _) = listener.accept().unwrap();
         let mut buf = [0; 4096];
         let _ = socket.read(&mut buf);
@@ -215,6 +219,7 @@ fn inherited_stdout_flags_remain_unchanged() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let path = config(listener.local_addr().unwrap().port(), 5, "shared-flags");
     let server = thread::spawn(move || {
+        common::accept_version(&listener);
         let (mut socket, _) = listener.accept().unwrap();
         let mut buf = [0; 4096];
         let _ = socket.read(&mut buf);
@@ -389,11 +394,19 @@ fn stdout_pipe_without_reader_fails() {
     let server = thread::spawn(move || {
         listener.set_nonblocking(true).unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
+        let mut version = false;
         loop {
             match listener.accept() {
                 Ok((mut socket, _)) => {
                     let mut buf = [0; 4096];
                     let _ = socket.read(&mut buf);
+                    if !version {
+                        version = true;
+                        let _ = socket.write_all(
+                            b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"version\":\"0.13.5\"}",
+                        );
+                        continue;
+                    }
                     let _ = socket.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"response\":\"x\",\"done\":true,\"done_reason\":\"stop\",\"prompt_eval_count\":1,\"eval_count\":1}\n");
                     break;
                 }

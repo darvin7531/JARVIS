@@ -1,3 +1,4 @@
+mod common;
 use jarvis::storage::SqliteStore;
 use std::{
     fs,
@@ -33,6 +34,7 @@ fn interrupted_process_retains_reservation(kill: bool) {
     let (tx, rx) = mpsc::channel();
     let (stop_tx, stop_rx) = mpsc::channel();
     let server = std::thread::spawn(move || {
+        common::accept_version(&listener);
         let (mut stream, _) = listener.accept().unwrap();
         let mut buf = [0; 4096];
         assert!(stream.read(&mut buf).unwrap() > 0);

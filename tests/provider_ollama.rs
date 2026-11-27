@@ -1,3 +1,4 @@
+mod common;
 use jarvis::provider::{Error, Ollama, Provider, Request};
 use std::{
     io::{Read, Write},
@@ -20,6 +21,7 @@ fn serve(body: &'static str, delay: Duration) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     thread::spawn(move || {
+        common::accept_version(&listener);
         let (mut stream, _) = listener.accept().unwrap();
         let mut buf = [0; 4096];
         let _ = stream.read(&mut buf);
@@ -134,6 +136,7 @@ fn callback_panic_closes_transport() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = thread::spawn(move || {
+        common::accept_version(&listener);
         let (mut stream, _) = listener.accept().unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
@@ -160,6 +163,7 @@ fn incomplete_http_body_is_transport_error_even_after_done() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     thread::spawn(move || {
+        common::accept_version(&listener);
         let (mut stream, _) = listener.accept().unwrap();
         let mut buf = [0; 4096];
         let _ = stream.read(&mut buf);
@@ -197,6 +201,7 @@ fn sends_requested_token_limit_and_handles_fragmented_unicode() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = thread::spawn(move || {
+        common::accept_version(&listener);
         let (mut stream, _) = listener.accept().unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
@@ -222,6 +227,7 @@ fn sends_requested_token_limit_and_handles_fragmented_unicode() {
                         serde_json::from_slice(&request[end + 4..end + 4 + length]).unwrap();
                     assert_eq!(payload["options"]["num_predict"], 8);
                     assert_eq!(payload["truncate"], false);
+                    assert_eq!(payload["shift"], false);
                     break;
                 }
             }
@@ -300,10 +306,21 @@ fn unsupported_ollama_is_rejected_before_prompt_is_sent() {
         let was_version = request.starts_with("GET /api/version ");
         let leaked = request.contains("private prompt");
         let body = r#"{"version":"0.6.8"}"#;
-        write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
         (was_version, leaked)
     });
-    assert!(Ollama { port }.generate(&request(), &AtomicBool::new(false), &mut |_| {}).is_err());
+    assert!(Ollama { port }
+        .generate(&request(), &AtomicBool::new(false), &mut |_| {})
+        .is_err());
     let (was_version, leaked) = server.join().unwrap();
-    assert!(was_version && !leaked, "must check version before sending prompt");
+    assert!(
+        was_version && !leaked,
+        "must check version before sending prompt"
+    );
 }

@@ -106,6 +106,75 @@ impl Provider for Ollama {
     }
 }
 impl Ollama {
+    fn check_version(
+        &self,
+        cancelled: &AtomicBool,
+        started: Instant,
+        timeout: Duration,
+    ) -> Result<(), Error> {
+        let mut child = ChildGuard(
+            Command::new("curl")
+                .args([
+                    "--disable",
+                    "--silent",
+                    "--fail",
+                    "--noproxy",
+                    "*",
+                    &format!("http://127.0.0.1:{}/api/version", self.port),
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|_| Error::Transport)?,
+        );
+        let output = child.0.stdout.take().ok_or(Error::Transport)?;
+        let (tx, rx) = mpsc::sync_channel(1);
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let result = output.take(4097).read_to_end(&mut bytes);
+            let _ = tx.send(result.map(|_| bytes));
+        });
+        loop {
+            if cancelled.load(Ordering::Relaxed) {
+                return Err(Error::Cancelled);
+            }
+            if started.elapsed() >= timeout {
+                return Err(Error::Timeout);
+            }
+            match rx.recv_timeout(Duration::from_millis(25)) {
+                Ok(Ok(bytes)) => {
+                    if bytes.len() > 4096 {
+                        return Err(Error::Transport);
+                    }
+                    let status = loop {
+                        if cancelled.load(Ordering::Relaxed) {
+                            return Err(Error::Cancelled);
+                        }
+                        if started.elapsed() >= timeout {
+                            return Err(Error::Timeout);
+                        }
+                        if let Some(status) = child.0.try_wait().map_err(|_| Error::Transport)? {
+                            break status;
+                        }
+                        thread::sleep(Duration::from_millis(5));
+                    };
+                    let value: serde_json::Value =
+                        serde_json::from_slice(&bytes).map_err(|_| Error::Transport)?;
+                    if status.success()
+                        && value.get("version").and_then(|v| v.as_str()) == Some("0.13.5")
+                    {
+                        return Ok(());
+                    }
+                    return Err(Error::Transport);
+                }
+                Ok(Err(_)) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(Error::Transport)
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+        }
+    }
     pub fn generate_bounded(
         &self,
         r: &Request<'_>,
@@ -114,7 +183,9 @@ impl Ollama {
         max_input_tokens: Option<u32>,
     ) -> Result<Usage, Error> {
         validate(r, cancelled)?;
-        let mut payload = serde_json::json!({"model":r.model,"prompt":r.prompt,"stream":true,"truncate":false,"options":{"num_predict":r.max_tokens}});
+        let started = Instant::now();
+        self.check_version(cancelled, started, r.timeout)?;
+        let mut payload = serde_json::json!({"model":r.model,"prompt":r.prompt,"stream":true,"truncate":false,"shift":false,"options":{"num_predict":r.max_tokens}});
         if let Some(bound) = max_input_tokens {
             payload["options"]["num_ctx"] = bound.into();
         }
@@ -163,7 +234,6 @@ impl Ollama {
                 }
             }
         });
-        let started = Instant::now();
         let mut line = Vec::new();
         let mut output_bytes = 0usize;
         let mut usage = None;

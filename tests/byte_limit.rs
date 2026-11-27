@@ -1,3 +1,4 @@
+mod common;
 use jarvis::storage::SqliteStore;
 use std::{
     fs,
@@ -50,6 +51,7 @@ fn byte_limit_accounts_terminal_usage_but_retains_unknown_reservation() {
             "budget":{"workspace":root,"limit_tokens":20,"max_input_tokens":10}
         }).to_string()).unwrap();
         let server = std::thread::spawn(move || {
+            common::accept_version(&listener);
             let (mut stream, _) = listener.accept().unwrap();
             let mut buf = [0; 4096];
             assert!(stream.read(&mut buf).unwrap() > 0);

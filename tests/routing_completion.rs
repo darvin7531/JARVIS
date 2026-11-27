@@ -1,3 +1,4 @@
+mod common;
 use std::{fs, process::Command};
 
 #[test]
@@ -39,6 +40,7 @@ fn configured_cli_streams_and_forwards_limits() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = thread::spawn(move || {
+        common::accept_version(&listener);
         let (mut socket, _) = listener.accept().unwrap();
         socket
             .set_read_timeout(Some(Duration::from_secs(5)))
@@ -113,6 +115,7 @@ fn timeout_reports_missing_usage() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = thread::spawn(move || {
+        common::accept_version(&listener);
         let (mut socket, _) = listener.accept().unwrap();
         socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nConnection: close\r\n\r\n{\"response\":\"partial\",\"done\":false}\n").unwrap();
         thread::sleep(Duration::from_secs(2));
@@ -146,6 +149,7 @@ fn signal_cancels_cli_and_reports_missing_usage() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = thread::spawn(move || {
+        common::accept_version(&listener);
         let (mut socket, _) = listener.accept().unwrap();
         socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nConnection: close\r\n\r\n{\"response\":\"partial\\n\",\"done\":false}\n").unwrap();
         thread::sleep(Duration::from_secs(2));

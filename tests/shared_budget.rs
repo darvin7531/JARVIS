@@ -1,3 +1,4 @@
+mod common;
 use std::{fs, process::Command};
 
 #[test]
@@ -45,6 +46,7 @@ fn concurrent_processes_settle_and_retain_unknown_usage() {
     let (ready_tx, ready_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     let server = std::thread::spawn(move || {
+        common::accept_version(&listener);
         let (mut stream, _) = listener.accept().unwrap();
         let mut buf = [0; 4096];
         assert!(stream.read(&mut buf).unwrap() > 0);
@@ -59,6 +61,7 @@ fn concurrent_processes_settle_and_retain_unknown_usage() {
         )
         .unwrap();
         drop(stream);
+        common::accept_version(&listener);
         let (mut stream, _) = listener.accept().unwrap();
         assert!(stream.read(&mut buf).unwrap() > 0);
         write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").unwrap();
@@ -123,6 +126,7 @@ fn terminal_overusage_is_retained_for_settlement() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
+        common::accept_version(&listener);
         let (mut stream, _) = listener.accept().unwrap();
         let mut buf = [0; 4096];
         assert!(stream.read(&mut buf).unwrap() > 0);
@@ -179,6 +183,7 @@ fn cli_settles_overusage_and_blocks_next_request() {
             "budget":{"workspace":root,"limit_tokens":20,"max_input_tokens":10}
         }).to_string()).unwrap();
         let server = std::thread::spawn(move || {
+            common::accept_version(&listener);
             let (mut stream, _) = listener.accept().unwrap();
             let mut buf = [0; 4096];
             assert!(stream.read(&mut buf).unwrap() > 0);
