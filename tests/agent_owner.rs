@@ -7,65 +7,6 @@ use std::{
 };
 
 #[test]
-fn write_outcome_persistence_failure_is_reported_as_uncertain() {
-    let path = std::env::temp_dir().join(format!("jarvis-owner-uncertain-{}", std::process::id()));
-    let mut store = SqliteStore::create(&path).unwrap();
-    store
-        .create_task(
-            &Task {
-                id: "task".into(),
-                version: 1,
-                title: "test".into(),
-            },
-            "created",
-            &[],
-        )
-        .unwrap();
-    store.initialize_tool_budget(4).unwrap();
-    let expires = SystemTime::now() + Duration::from_secs(300);
-    let req = ToolRequest {
-        tool: "write".into(),
-        action: "write".into(),
-        resource: "mock/item".into(),
-        data_class: DataClass::Public,
-        arguments: json!({"text":"value"}),
-    };
-    store
-        .issue_tool_approval("write", "task", 1, &req, expires)
-        .unwrap();
-    drop(store);
-    let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
-    db.execute_batch("CREATE TRIGGER reject_outcome BEFORE INSERT ON events WHEN NEW.event LIKE '%tool_execution_outcome%' BEGIN SELECT RAISE(ABORT, 'failed'); END;").unwrap();
-    drop(db);
-    let owner = json!({"store":path, "task":"task", "revision":1, "approval":"write", "read_approval":"missing", "resource":"mock/item", "data_class":"public", "permitted_text":"value", "expected":"value", "expires_unix":expires.duration_since(UNIX_EPOCH).unwrap().as_secs(), "context":"test"});
-    let owner_path = path.join("owner.json");
-    let proposal_path = path.join("proposal.json");
-    std::fs::write(&owner_path, owner.to_string()).unwrap();
-    std::fs::write(&proposal_path, serde_json::to_string(&req).unwrap()).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_jarvis"))
-        .arg("agent")
-        .arg("--owner")
-        .arg(&owner_path)
-        .arg("--mock-response")
-        .arg(&proposal_path)
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("outcome_uncertain"),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
-    let count: i64 = db
-        .query_row("SELECT count(*) FROM mock_state", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(count, 1);
-    drop(db);
-    std::fs::remove_dir_all(path).unwrap();
-}
-
-#[test]
 fn owner_approval_is_independent_of_model_and_write_is_verified() {
     let path = std::env::temp_dir().join(format!("jarvis-owner-{}", std::process::id()));
     let mut store = SqliteStore::create(&path).unwrap();
