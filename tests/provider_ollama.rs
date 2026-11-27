@@ -111,3 +111,12 @@ fn actual_ollama_smoke_when_enabled() {
     assert!(!text.trim().is_empty());
     assert!(usage.input_tokens > 0 && usage.output_tokens > 0 && usage.output_tokens <= 16);
 }
+
+#[test]
+fn terminal_text_is_not_emitted_when_usage_is_invalid() {
+    let port = serve("{\"response\":\"unsafe\",\"done\":true,\"prompt_eval_count\":1,\"eval_count\":9}\n", Duration::ZERO);
+    let mut text = String::new();
+    let result = Ollama { port }.generate(&request(), &AtomicBool::new(false), &mut |s| text.push_str(s));
+    assert!(result.is_err());
+    assert!(text.is_empty(), "invalid terminal text was emitted");
+}
