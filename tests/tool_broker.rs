@@ -293,8 +293,12 @@ fn expired_and_mismatched_approvals_never_execute() {
             "task",
             1,
             &request(),
-            SystemTime::now() - Duration::from_secs(2),
+            SystemTime::now() + Duration::from_secs(60),
         )
+        .unwrap();
+    rusqlite::Connection::open(path.join("jarvis.sqlite3"))
+        .unwrap()
+        .execute("UPDATE tool_approvals SET expires = 0 WHERE id = 'expired'", [])
         .unwrap();
     store
         .issue_tool_approval(

@@ -274,10 +274,24 @@ impl SqliteStore {
             return Err(StorageError::OperationFailed);
         }
         let request = serde_json::to_string(request).map_err(|_| StorageError::OperationFailed)?;
-        let changed = self.db.execute("INSERT INTO tool_approvals (id, task_id, revision, request, expires) SELECT ?1, id, version, ?4, ?5 FROM tasks WHERE id = ?2 AND version = ?3", params![id, task, revision, request, expires])?;
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let now = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| StorageError::OperationFailed)?
+                .as_secs(),
+        )
+        .map_err(|_| StorageError::OperationFailed)?;
+        if expires <= now {
+            return Err(StorageError::OperationFailed);
+        }
+        let changed = tx.execute("INSERT INTO tool_approvals (id, task_id, revision, request, expires) SELECT ?1, id, version, ?4, ?5 FROM tasks WHERE id = ?2 AND version = ?3", params![id, task, revision, request, expires])?;
         if changed != 1 {
             return Err(StorageError::OperationFailed);
         }
+        tx.commit()?;
         Ok(())
     }
 
