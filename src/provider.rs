@@ -251,14 +251,14 @@ impl Ollama {
                                 incomplete = true;
                             }
                         }
-                        if !over_bytes
-                            && !(done
+                        if !(over_bytes
+                            || (done
                                 && incomplete
                                 && (usage.as_ref().is_some_and(|u| {
                                     u.output_tokens > u64::from(r.max_tokens)
                                         || max_input_tokens
                                             .is_some_and(|max| u.input_tokens > u64::from(max))
-                                })))
+                                }))))
                         {
                             emit(text);
                         }
