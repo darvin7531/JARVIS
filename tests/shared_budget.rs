@@ -31,7 +31,7 @@ fn exhausted_shared_budget_rejects_before_connecting() {
     let _ = fs::remove_dir_all(&root);
     fs::create_dir(&root).unwrap();
     let config = root.join("chat.json");
-    fs::write(&config, format!(r#"{{"models":[{{"name":"model","tier":"t1","capabilities":["text"],"allowed_data":["public"],"port":1}}],"budget":{{"workspace":"{}","limit_tokens":0,"max_input_tokens":1}}}}"#, root.display())).unwrap();
+    fs::write(&config, format!(r#"{{"models":[{{"name":"model","tier":"t1","capabilities":["text"],"allowed_data":["public"],"trusted_no_truncation":true,"port":1}}],"budget":{{"workspace":"{}","limit_tokens":0,"max_input_tokens":1}}}}"#, root.display())).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_jarvis"))
         .args(["chat", "--config"])
         .arg(&config)
@@ -63,7 +63,7 @@ fn concurrent_processes_settle_and_retain_unknown_usage() {
     let port = listener.local_addr().unwrap().port();
     let config = root.join("chat.json");
     fs::write(&config, serde_json::json!({
-        "models": [{"name":"model","tier":"t1","capabilities":["text"],"allowed_data":["public"],"port":port}],
+        "models": [{"name":"model","tier":"t1","capabilities":["text"],"allowed_data":["public"],"trusted_no_truncation":true,"port":port}],
         "limits": {"max_tokens":5},
         "budget": {"workspace":root,"limit_tokens":100,"max_input_tokens":10}
     }).to_string()).unwrap();
@@ -168,7 +168,11 @@ fn terminal_overusage_is_retained_for_settlement() {
         timeout: Duration::from_secs(5),
     };
     let mut text = String::new();
-    let result = Ollama { port }.generate_bounded(
+    let result = Ollama {
+        port,
+        trusted_no_truncation: true,
+    }
+    .generate_bounded(
         &req,
         &AtomicBool::new(false),
         &mut |s| text.push_str(s),
@@ -199,7 +203,7 @@ fn cli_settles_overusage_and_blocks_next_request() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let config = root.join("config.json");
         fs::write(&config, serde_json::json!({
-            "models":[{"name":"model","tier":"t1","capabilities":["text"],"allowed_data":["public"],"port":listener.local_addr().unwrap().port()}],
+            "models":[{"name":"model","tier":"t1","capabilities":["text"],"allowed_data":["public"],"trusted_no_truncation":true,"port":listener.local_addr().unwrap().port()}],
             "limits":{"max_tokens":5},
             "budget":{"workspace":root,"limit_tokens":20,"max_input_tokens":10}
         }).to_string()).unwrap();

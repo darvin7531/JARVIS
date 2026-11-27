@@ -94,6 +94,7 @@ impl Drop for ChildGuard {
 /// Uses curl for HTTP framing. Loopback does not guarantee the server handles data locally.
 pub struct Ollama {
     pub port: u16,
+    pub trusted_no_truncation: bool,
 }
 impl Provider for Ollama {
     fn generate(
@@ -114,7 +115,10 @@ impl Ollama {
         max_input_tokens: Option<u32>,
     ) -> Result<Usage, Error> {
         validate(r, cancelled)?;
-        let mut payload = serde_json::json!({"model":r.model,"prompt":r.prompt,"stream":true,"options":{"num_predict":r.max_tokens}});
+        if !self.trusted_no_truncation {
+            return Err(Error::InvalidRequest);
+        }
+        let mut payload = serde_json::json!({"model":r.model,"prompt":r.prompt,"stream":true,"truncate":false,"shift":false,"options":{"num_predict":r.max_tokens}});
         if let Some(bound) = max_input_tokens {
             payload["options"]["num_ctx"] = bound.into();
         }

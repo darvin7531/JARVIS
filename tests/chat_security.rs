@@ -25,7 +25,7 @@ fn config(port: u16, timeout: u64, name: &str) -> std::path::PathBuf {
     drop(jarvis::storage::SqliteStore::create(&workspace).unwrap());
     fs::write(&path, serde_json::json!({
         "limits": {"timeout_seconds":timeout,"max_output_bytes":524288},
-        "models": [{"name":"test","tier":"t1","capabilities":["text"],"allowed_data":["sensitive","public"],"trusted_local":true,"port":port}],
+        "models": [{"name":"test","tier":"t1","capabilities":["text"],"allowed_data":["sensitive","public"],"trusted_local":true,"trusted_no_truncation":true,"port":port}],
         "budget": {"workspace":workspace,"limit_tokens":10000,"max_input_tokens":2048}
     }).to_string()).unwrap();
     path

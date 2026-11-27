@@ -12,7 +12,7 @@ fn add_budget(path: &std::path::Path) {
 #[test]
 fn configured_chat_rejects_vision_for_text_only_transport() {
     let path = std::env::temp_dir().join(format!("jarvis-vision-{}.json", std::process::id()));
-    fs::write(&path, r#"{"models":[{"name":"test","tier":"t1","capabilities":["text","vision"],"allowed_data":["public"],"port":1}]}"#).unwrap();
+    fs::write(&path, r#"{"models":[{"name":"test","tier":"t1","capabilities":["text","vision"],"allowed_data":["public"],"trusted_no_truncation":true,"port":1}]}"#).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_jarvis"))
         .args([
             "chat",
@@ -82,7 +82,7 @@ fn configured_cli_streams_and_forwards_limits() {
             .unwrap();
     });
     let path = std::env::temp_dir().join(format!("jarvis-stream-{}.json", std::process::id()));
-    fs::write(&path, format!(r#"{{"limits":{{"max_tokens":7,"timeout_seconds":5,"max_output_bytes":100}},"models":[{{"name":"coder","tier":"t2","capabilities":["text"],"allowed_data":["public"],"port":{port}}}]}}"#)).unwrap();
+    fs::write(&path, format!(r#"{{"limits":{{"max_tokens":7,"timeout_seconds":5,"max_output_bytes":100}},"models":[{{"name":"coder","tier":"t2","capabilities":["text"],"allowed_data":["public"],"trusted_no_truncation":true,"port":{port}}}]}}"#)).unwrap();
     add_budget(&path);
     let mut child = Command::new(env!("CARGO_BIN_EXE_jarvis"))
         .args(["chat", "--config", path.to_str().unwrap(), "code: hi"])
@@ -128,7 +128,7 @@ fn timeout_reports_missing_usage() {
         thread::sleep(Duration::from_secs(2));
     });
     let path = std::env::temp_dir().join(format!("jarvis-timeout-{}.json", std::process::id()));
-    fs::write(&path, format!(r#"{{"limits":{{"timeout_seconds":1}},"models":[{{"name":"test","tier":"t1","capabilities":["text"],"allowed_data":["public"],"port":{port}}}]}}"#)).unwrap();
+    fs::write(&path, format!(r#"{{"limits":{{"timeout_seconds":1}},"models":[{{"name":"test","tier":"t1","capabilities":["text"],"allowed_data":["public"],"trusted_no_truncation":true,"port":{port}}}]}}"#)).unwrap();
     add_budget(&path);
     let output = Command::new(env!("CARGO_BIN_EXE_jarvis"))
         .args(["chat", "--config", path.to_str().unwrap(), "hi"])
@@ -162,7 +162,7 @@ fn signal_cancels_cli_and_reports_missing_usage() {
         thread::sleep(Duration::from_secs(2));
     });
     let path = std::env::temp_dir().join(format!("jarvis-cancel-{}.json", std::process::id()));
-    fs::write(&path, format!(r#"{{"models":[{{"name":"test","tier":"t1","capabilities":["text"],"allowed_data":["public"],"port":{port}}}]}}"#)).unwrap();
+    fs::write(&path, format!(r#"{{"models":[{{"name":"test","tier":"t1","capabilities":["text"],"allowed_data":["public"],"trusted_no_truncation":true,"port":{port}}}]}}"#)).unwrap();
     add_budget(&path);
     let mut child = Command::new(env!("CARGO_BIN_EXE_jarvis"))
         .args(["chat", "--config", path.to_str().unwrap(), "hi"])
