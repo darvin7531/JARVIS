@@ -20,7 +20,7 @@ fn config(port: u16, timeout: u64, name: &str) -> std::path::PathBuf {
         "jarvis-security-{name}-{}.json",
         std::process::id()
     ));
-    fs::write(&path, format!(r#"{{"limits":{{"timeout_seconds":{timeout},"max_output_bytes":524288}},"models":[{{"name":"test","tier":"t1","capabilities":["text"],"allowed_data":["sensitive","public"],"port":{port}}}]}}"#)).unwrap();
+    fs::write(&path, format!(r#"{{"limits":{{"timeout_seconds":{timeout},"max_output_bytes":524288}},"models":[{{"name":"test","tier":"t1","capabilities":["text"],"allowed_data":["sensitive","public"],"trusted_local":true,"port":{port}}}]}}"#)).unwrap();
     path
 }
 
@@ -182,4 +182,28 @@ fn full_stdout_pipe_respects_sigint_and_timeout() {
         server.join().unwrap();
         fs::remove_file(path).unwrap();
     }
+}
+
+#[test]
+fn length_finish_reports_usage_and_budget_error() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let path = config(listener.local_addr().unwrap().port(), 5, "length");
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut buf = [0; 4096];
+        let _ = socket.read(&mut buf);
+        socket.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{\"response\":\"partial\",\"done\":true,\"done_reason\":\"length\",\"prompt_eval_count\":2,\"eval_count\":3}\n").unwrap();
+    });
+    let output = Command::new(env!("CARGO_BIN_EXE_jarvis"))
+        .args(["chat", "--config", path.to_str().unwrap(), "hello"])
+        .output()
+        .unwrap();
+    server.join().unwrap();
+    fs::remove_file(path).unwrap();
+    assert!(!output.status.success());
+    assert_eq!(output.stdout, b"partial");
+    assert_eq!(
+        output.stderr,
+        b"{\"input_tokens\":2,\"output_tokens\":3}\n{\"error\":\"budget_exceeded\"}\n"
+    );
 }

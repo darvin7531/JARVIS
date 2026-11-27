@@ -45,6 +45,8 @@ struct Model {
     capabilities: Vec<String>,
     allowed_data: Vec<String>,
     port: u16,
+    #[serde(default)]
+    trusted_local: bool,
 }
 fn tier(s: &str) -> Option<Tier> {
     match s {
@@ -178,7 +180,10 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
             m.allowed_data
                 .iter()
                 .map(|s| data(s).ok_or("invalid_config"))
-                .collect::<Result<Vec<_>, _>>()?,
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .filter(|class| m.trusted_local || *class == DataClass::Public)
+                .collect(),
         );
     }
     let profiles: Vec<_> = config
@@ -260,14 +265,23 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
         }
     })
     .map_err(|error| {
-        eprintln!("{{\"usage\":null}}");
+        if let jarvis::provider::Error::Incomplete(ref usage) = error {
+            eprintln!(
+                "{{\"input_tokens\":{},\"output_tokens\":{}}}",
+                usage.input_tokens, usage.output_tokens
+            );
+        } else {
+            eprintln!("{{\"usage\":null}}");
+        }
         if let Some(code) = failure {
             return code;
         }
         match error {
             jarvis::provider::Error::Cancelled => "cancelled",
             jarvis::provider::Error::Timeout => "timeout",
-            jarvis::provider::Error::Budget => "budget_exceeded",
+            jarvis::provider::Error::Budget | jarvis::provider::Error::Incomplete(_) => {
+                "budget_exceeded"
+            }
             _ => "inference_failed",
         }
     })?;

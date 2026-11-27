@@ -247,9 +247,14 @@ fn sends_requested_token_limit_and_handles_fragmented_unicode() {
 fn length_finish_is_incomplete_and_preserves_usage() {
     let port = serve("{\"response\":\"partial\",\"done\":true,\"done_reason\":\"length\",\"prompt_eval_count\":2,\"eval_count\":3}\n", Duration::ZERO);
     let mut text = String::new();
-    let result = Ollama { port }.generate(&request(), &AtomicBool::new(false), &mut |s| text.push_str(s));
+    let result = Ollama { port }.generate(&request(), &AtomicBool::new(false), &mut |s| {
+        text.push_str(s)
+    });
     assert_eq!(text, "partial");
     let error = result.expect_err("length must not be reported as complete");
     let debug = format!("{error:?}");
-    assert!(debug.contains("input_tokens: 2") && debug.contains("output_tokens: 3"), "{debug}");
+    assert!(
+        debug.contains("input_tokens: 2") && debug.contains("output_tokens: 3"),
+        "{debug}"
+    );
 }

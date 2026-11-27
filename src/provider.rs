@@ -16,6 +16,7 @@ pub enum Error {
     Cancelled,
     Timeout,
     Budget,
+    Incomplete(Usage),
     Transport,
     InvalidStream,
     Truncated,
@@ -90,7 +91,7 @@ impl Drop for ChildGuard {
     }
 }
 
-/// Uses curl for HTTP framing. Only a loopback port is configurable; no secrets or remote hosts.
+/// Uses curl for HTTP framing. Loopback does not guarantee the server handles data locally.
 pub struct Ollama {
     pub port: u16,
 }
@@ -151,6 +152,7 @@ impl Provider for Ollama {
         let mut line = Vec::new();
         let mut output_bytes = 0usize;
         let mut usage = None;
+        let mut incomplete = false;
         let result = loop {
             if cancelled.load(Ordering::Relaxed) {
                 break Err(Error::Cancelled);
@@ -199,6 +201,17 @@ impl Provider for Ollama {
                             }
                         };
                         if done {
+                            match value.get("done_reason") {
+                                None => {}
+                                Some(reason) if reason.as_str() == Some("stop") => {}
+                                Some(reason) if reason.as_str() == Some("length") => {
+                                    incomplete = true
+                                }
+                                _ => {
+                                    error = Some(Error::InvalidStream);
+                                    break;
+                                }
+                            }
                             match (
                                 value.get("prompt_eval_count").and_then(|v| v.as_u64()),
                                 value.get("eval_count").and_then(|v| v.as_u64()),
@@ -232,7 +245,11 @@ impl Provider for Ollama {
                     } else if !line.is_empty() {
                         Err(Error::Truncated)
                     } else {
-                        usage.ok_or(Error::Truncated)
+                        match usage {
+                            Some(usage) if incomplete => Err(Error::Incomplete(usage)),
+                            Some(usage) => Ok(usage),
+                            None => Err(Error::Truncated),
+                        }
                     };
                 }
             }
