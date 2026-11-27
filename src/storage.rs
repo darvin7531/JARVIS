@@ -390,10 +390,21 @@ impl SqliteStore {
         path: &Path,
         mut after_step: impl FnMut(),
     ) -> Result<(), StorageError> {
-        use std::os::unix::{ffi::OsStrExt, fs::DirBuilderExt};
+        use std::os::unix::{
+            ffi::OsStrExt,
+            fs::{DirBuilderExt, MetadataExt},
+        };
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let parent = path.parent().ok_or(StorageError::OperationFailed)?;
+        let parent_metadata =
+            std::fs::symlink_metadata(parent).map_err(|_| StorageError::OperationFailed)?;
+        if !parent_metadata.is_dir()
+            || parent_metadata.uid() != unsafe { libc::geteuid() }
+            || parent_metadata.mode() & 0o022 != 0
+        {
+            return Err(StorageError::OperationFailed);
+        }
         let temporary = parent.join(format!(
             ".jarvis-backup-{}-{}",
             std::process::id(),
@@ -407,22 +418,32 @@ impl SqliteStore {
             {
                 let mut destination = Connection::open(temporary.join("jarvis.sqlite3"))?;
                 destination.busy_timeout(std::time::Duration::from_millis(100))?;
-                let backup = rusqlite::backup::Backup::new(&self.db, &mut destination)?;
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-                loop {
-                    match backup.step(100)? {
-                        rusqlite::backup::StepResult::Done => break,
-                        _ if std::time::Instant::now() >= deadline => {
-                            return Err(StorageError::OperationFailed);
+                {
+                    let backup = rusqlite::backup::Backup::new(&self.db, &mut destination)?;
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+                    loop {
+                        match backup.step(100)? {
+                            rusqlite::backup::StepResult::Done => break,
+                            _ if std::time::Instant::now() >= deadline => {
+                                return Err(StorageError::OperationFailed);
+                            }
+                            rusqlite::backup::StepResult::More => {
+                                after_step();
+                                std::thread::sleep(std::time::Duration::from_millis(10));
+                            }
+                            _ => std::thread::sleep(std::time::Duration::from_millis(10)),
                         }
-                        rusqlite::backup::StepResult::More => {
-                            after_step();
-                            std::thread::sleep(std::time::Duration::from_millis(10));
-                        }
-                        _ => std::thread::sleep(std::time::Duration::from_millis(10)),
                     }
                 }
+                // A snapshot cannot establish how much was spent after it was taken.
+                destination.execute("INSERT INTO inference_budget (id, tokens, pending) VALUES (-1, 0, 1) ON CONFLICT(id) DO UPDATE SET pending = 1", [])?;
             }
+            std::fs::File::open(temporary.join("jarvis.sqlite3"))
+                .and_then(|file| file.sync_all())
+                .map_err(|_| StorageError::OperationFailed)?;
+            std::fs::File::open(&temporary)
+                .and_then(|dir| dir.sync_all())
+                .map_err(|_| StorageError::OperationFailed)?;
             let from = std::ffi::CString::new(temporary.as_os_str().as_bytes())
                 .map_err(|_| StorageError::OperationFailed)?;
             let to = std::ffi::CString::new(path.as_os_str().as_bytes())
@@ -440,6 +461,9 @@ impl SqliteStore {
             if unsafe { renameat2(-100, from.as_ptr(), -100, to.as_ptr(), 1) } != 0 {
                 return Err(StorageError::OperationFailed);
             }
+            std::fs::File::open(parent)
+                .and_then(|dir| dir.sync_all())
+                .map_err(|_| StorageError::OperationFailed)?;
             Ok(())
         })();
         if result.is_err() {
