@@ -10,23 +10,53 @@ use std::{
 fn held_open_decision_expires_without_approval() {
     let path = std::env::temp_dir().join(format!("jarvis-owner-expiry-{}", std::process::id()));
     let mut store = SqliteStore::create(&path).unwrap();
-    store.create_task(&Task { id: "task".into(), version: 1, title: "test".into() }, "created", &[]).unwrap();
+    store
+        .create_task(
+            &Task {
+                id: "task".into(),
+                version: 1,
+                title: "test".into(),
+            },
+            "created",
+            &[],
+        )
+        .unwrap();
     drop(store);
-    let expires = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + 2;
+    let expires = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 2;
     let input = path.join("approval.json");
     std::fs::write(&input, json!({"store":path,"task":"task","revision":1,"approval":"one","expires_unix":expires,"request":{"tool":"write","action":"write","resource":"mock/item","data_class":"public","arguments":{"text":"hello"}}}).to_string()).unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_jarvis"))
-        .args(["agent", "approve", "--input"]).arg(&input)
-        .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+        .args(["agent", "approve", "--input"])
+        .arg(&input)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let status = loop {
-        if let Some(status) = child.try_wait().unwrap() { break Some(status); }
-        if std::time::Instant::now() >= deadline { child.kill().unwrap(); child.wait().unwrap(); break None; }
+        if let Some(status) = child.try_wait().unwrap() {
+            break Some(status);
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            break None;
+        }
         std::thread::sleep(std::time::Duration::from_millis(20));
     };
-    assert!(status.is_some_and(|s| !s.success()), "approval interaction did not expire");
+    assert!(
+        status.is_some_and(|s| !s.success()),
+        "approval interaction did not expire"
+    );
     let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
-    let count: i64 = db.query_row("SELECT count(*) FROM tool_approvals", [], |r| r.get(0)).unwrap();
+    let count: i64 = db
+        .query_row("SELECT count(*) FROM tool_approvals", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(count, 0);
 }
 

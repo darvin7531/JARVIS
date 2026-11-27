@@ -61,7 +61,12 @@ pub fn approve(path: &OsStr) -> Result<(), &'static str> {
         let n = unsafe { libc::write(out.as_raw_fd(), remaining.as_ptr().cast(), remaining.len()) };
         if n > 0 {
             remaining = &remaining[n as usize..];
-        } else if n == 0 || !matches!(std::io::Error::last_os_error().kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) {
+        } else if n == 0
+            || !matches!(
+                std::io::Error::last_os_error().kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+            )
+        {
             return Err("agent_output");
         }
     }
@@ -71,9 +76,16 @@ pub fn approve(path: &OsStr) -> Result<(), &'static str> {
         approval_ready(input_fd.as_raw_fd(), libc::POLLIN, expires, &cancelled)?;
         let mut byte = 0u8;
         let n = unsafe { libc::read(input_fd.as_raw_fd(), (&mut byte as *mut u8).cast(), 1) };
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         if n < 0 {
-            if matches!(std::io::Error::last_os_error().kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) { continue; }
+            if matches!(
+                std::io::Error::last_os_error().kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+            ) {
+                continue;
+            }
             return Err("agent_input");
         }
         decision.push(byte);
@@ -113,13 +125,28 @@ fn approval_fd(fd: i32, output: bool) -> Result<std::fs::File, &'static str> {
         .map_err(|_| "agent_io")
 }
 
-fn approval_ready(fd: i32, events: i16, expires: SystemTime, cancelled: &AtomicBool) -> Result<(), &'static str> {
+fn approval_ready(
+    fd: i32,
+    events: i16,
+    expires: SystemTime,
+    cancelled: &AtomicBool,
+) -> Result<(), &'static str> {
     loop {
-        if cancelled.load(Ordering::Relaxed) { return Err("cancelled"); }
-        if SystemTime::now() >= expires { return Err("timeout"); }
-        let mut pollfd = libc::pollfd { fd, events, revents: 0 };
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("cancelled");
+        }
+        if SystemTime::now() >= expires {
+            return Err("timeout");
+        }
+        let mut pollfd = libc::pollfd {
+            fd,
+            events,
+            revents: 0,
+        };
         let n = unsafe { libc::poll(&mut pollfd, 1, 50) };
-        if n > 0 { return Ok(()); }
+        if n > 0 {
+            return Ok(());
+        }
         if n < 0 && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
             return Err("agent_io");
         }

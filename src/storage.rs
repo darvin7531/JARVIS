@@ -296,8 +296,7 @@ impl SqliteStore {
                 .as_secs(),
         )
         .map_err(|_| StorageError::OperationFailed)?;
-        if expires <= now
-            || cancelled.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+        if expires <= now || cancelled.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
         {
             return Err(StorageError::OperationFailed);
         }

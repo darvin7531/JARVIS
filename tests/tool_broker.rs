@@ -298,7 +298,10 @@ fn expired_and_mismatched_approvals_never_execute() {
         .unwrap();
     rusqlite::Connection::open(path.join("jarvis.sqlite3"))
         .unwrap()
-        .execute("UPDATE tool_approvals SET expires = 0 WHERE id = 'expired'", [])
+        .execute(
+            "UPDATE tool_approvals SET expires = 0 WHERE id = 'expired'",
+            [],
+        )
         .unwrap();
     store
         .issue_tool_approval(
