@@ -123,3 +123,86 @@ fn approved_mock_write_persists_and_denials_do_not_mutate() {
     );
     assert_eq!(broker.call(&read), Ok("first".into()));
 }
+
+fn sensitive_then_public(tool: &str) {
+    let path = std::env::temp_dir().join(format!("jarvis-class-{tool}-{}", std::process::id()));
+    let mut store = SqliteStore::create(&path).unwrap();
+    store
+        .create_task(
+            &Task {
+                id: "task".into(),
+                version: 1,
+                title: "test".into(),
+            },
+            "created",
+            &[],
+        )
+        .unwrap();
+    store.initialize_tool_budget(3).unwrap();
+    let mut secret = request("write", "write", "secret");
+    secret.data_class = DataClass::Sensitive;
+    let mut secret_contract = contract("write", "write", Scope::Write, "secret");
+    secret_contract.data_class = DataClass::Sensitive;
+    store
+        .issue_tool_approval(
+            "secret",
+            "task",
+            1,
+            &secret,
+            SystemTime::now() + Duration::from_secs(120),
+        )
+        .unwrap();
+    let mut broker =
+        Broker::with_approval(secret_contract, store, "secret".into(), "task".into(), 1);
+    assert_eq!(broker.call(&secret), Ok("secret".into()));
+    drop(broker);
+    let mut store = SqliteStore::open(&path).unwrap();
+    let (scope, text) = if tool == "read" {
+        (Scope::Read, "")
+    } else {
+        (Scope::Write, "replacement")
+    };
+    let public = request(tool, tool, text);
+    store
+        .issue_tool_approval(
+            "public",
+            "task",
+            1,
+            &public,
+            SystemTime::now() + Duration::from_secs(120),
+        )
+        .unwrap();
+    let mut broker = Broker::with_approval(
+        contract(tool, tool, scope, text),
+        store,
+        "public".into(),
+        "task".into(),
+        1,
+    );
+    assert!(
+        broker.call(&public).is_err(),
+        "public {tool} must be denied"
+    );
+    drop(broker);
+    let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
+    let value: String = db
+        .query_row(
+            "SELECT value FROM mock_state WHERE resource = 'mock/item'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(value, "secret");
+    drop(db);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn sensitive_value_cannot_be_read_as_public() {
+    sensitive_then_public("read");
+}
+
+#[test]
+fn sensitive_value_cannot_be_overwritten_as_public() {
+    sensitive_then_public("write");
+}
