@@ -426,7 +426,7 @@ impl SqliteStore {
         &self,
         resource: &str,
         class: crate::tool_policy::DataClass,
-    ) -> Result<String, StorageError> {
+    ) -> Result<Option<String>, StorageError> {
         let row: Option<(String, Option<String>)> = self
             .db
             .query_row(
@@ -436,8 +436,8 @@ impl SqliteStore {
             )
             .optional()?;
         match row {
-            None => Ok(String::new()),
-            Some((value, Some(stored))) if stored == mock_class(class) => Ok(value),
+            None => Ok(None),
+            Some((value, Some(stored))) if stored == mock_class(class) => Ok(Some(value)),
             _ => Err(StorageError::OperationFailed),
         }
     }

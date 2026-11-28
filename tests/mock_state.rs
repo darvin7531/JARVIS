@@ -297,15 +297,66 @@ fn legacy_unclassified_values_cannot_be_read_or_overwritten() {
 }
 
 #[test]
-fn absent_read_is_not_an_empty_value() {
+fn approved_read_distinguishes_absent_and_empty_after_reopen() {
     let path = std::env::temp_dir().join(format!("jarvis-absent-read-{}", std::process::id()));
     let mut store = SqliteStore::create(&path).unwrap();
-    store.create_task(&Task { id: "task".into(), version: 1, title: "test".into() }, "created", &[]).unwrap();
-    store.initialize_tool_budget(2).unwrap();
+    store
+        .create_task(
+            &Task {
+                id: "task".into(),
+                version: 1,
+                title: "test".into(),
+            },
+            "created",
+            &[],
+        )
+        .unwrap();
+    store.initialize_tool_budget(3).unwrap();
     let read = request("read", "read", "");
-    store.issue_tool_approval("read", "task", 1, &read, SystemTime::now() + Duration::from_secs(120)).unwrap();
-    let mut broker = Broker::with_approval(contract("read", "read", Scope::Read, ""), store, "read".into(), "task".into(), 1);
-    assert_ne!(broker.call(&read), Ok(String::new()));
+    for id in ["absent", "empty"] {
+        store
+            .issue_tool_approval(
+                id,
+                "task",
+                1,
+                &read,
+                SystemTime::now() + Duration::from_secs(120),
+            )
+            .unwrap();
+    }
+    let mut broker = Broker::with_approval(
+        contract("read", "read", Scope::Read, ""),
+        store,
+        "absent".into(),
+        "task".into(),
+        1,
+    );
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    assert_eq!(broker.read_cancellable(&read, &cancelled), Ok(None));
+    drop(broker);
+    let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
+    db.execute(
+        "INSERT INTO mock_state (resource, value, data_class) VALUES ('mock/item', '', 'public')",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    let store = SqliteStore::open(&path).unwrap();
+    let mut broker = Broker::with_approval(
+        contract("read", "read", Scope::Read, ""),
+        store,
+        "empty".into(),
+        "task".into(),
+        1,
+    );
+    assert_eq!(
+        broker.read_cancellable(&read, &cancelled),
+        Ok(Some(String::new()))
+    );
+    assert_eq!(
+        broker.read_cancellable(&read, &cancelled),
+        Err(BrokerError::Denied)
+    );
     drop(broker);
     std::fs::remove_dir_all(path).unwrap();
 }

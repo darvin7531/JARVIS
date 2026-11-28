@@ -163,6 +163,27 @@ impl Broker {
         request: &ToolRequest,
         cancelled: &std::sync::atomic::AtomicBool,
     ) -> Result<String, BrokerError> {
+        self.call_inner(request, cancelled)
+            .map(Option::unwrap_or_default)
+    }
+
+    /// A read preserves absence separately from an existing empty value.
+    pub fn read_cancellable(
+        &mut self,
+        request: &ToolRequest,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<Option<String>, BrokerError> {
+        if request.tool != "read" {
+            return Err(BrokerError::Denied);
+        }
+        self.call_inner(request, cancelled)
+    }
+
+    fn call_inner(
+        &mut self,
+        request: &ToolRequest,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<Option<String>, BrokerError> {
         use std::sync::atomic::Ordering;
         if cancelled.load(Ordering::Relaxed) {
             return Err(BrokerError::Cancelled);
@@ -221,7 +242,7 @@ impl Broker {
         }
         self.executions += 1;
         let result = match tool {
-            RegisteredTool::Inert { text } => text,
+            RegisteredTool::Inert { text } => Some(text),
             RegisteredTool::Read { .. } => store
                 .mock_read(&request.resource, request.data_class)
                 .map_err(|_| BrokerError::OutcomeUncertain)?,
@@ -229,7 +250,7 @@ impl Broker {
                 store
                     .mock_write(&request.resource, &text, request.data_class)
                     .map_err(|_| BrokerError::OutcomeUncertain)?;
-                text
+                Some(text)
             }
         };
         #[cfg(test)]
