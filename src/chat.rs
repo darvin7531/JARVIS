@@ -485,7 +485,7 @@ fn configured_inference(
             }
         },
         Some(budget.max_input_tokens),
-        structured.then(|| &proposal_schema),
+        structured.then_some(&proposal_schema),
     );
     {
         let (store, id) = &mut reservation;
