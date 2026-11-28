@@ -1018,6 +1018,48 @@ mod backup_tests {
     use std::{sync::mpsc, time::Duration};
 
     #[test]
+    fn cancellation_while_waiting_for_result_lock_rolls_back() {
+        use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+        use std::time::Instant;
+        static BLOCKED: AtomicBool = AtomicBool::new(false);
+        let root = std::env::temp_dir().join(format!("jarvis-result-lock-{}", std::process::id()));
+        let mut store = SqliteStore::create(&root).unwrap();
+        store.create_task(&Task { id: "task".into(), version: 1, title: "test".into() }, "created", &[]).unwrap();
+        assert!(store.agent_step("task", 1, 2, 2).unwrap());
+        let lock = Connection::open(root.join("jarvis.sqlite3")).unwrap();
+        lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+        store.db.busy_handler(Some(|_| {
+            BLOCKED.store(true, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(1));
+            true
+        })).unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = Arc::clone(&cancelled);
+        let worker = std::thread::spawn(move || {
+            // The existing caller checks before entering the transaction.
+            assert!(!worker_cancelled.load(Ordering::SeqCst));
+            store.finish_agent_result("task", 1, false, r#"{"type":"checkpoint","status":"verified"}"#)
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !BLOCKED.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(BLOCKED.load(Ordering::SeqCst), "result never waited for lock");
+        cancelled.store(true, Ordering::SeqCst);
+        lock.execute_batch("COMMIT").unwrap();
+        assert!(worker.join().unwrap().is_err(), "cancelled result was committed");
+        drop(lock);
+        let db = Connection::open(root.join("jarvis.sqlite3")).unwrap();
+        let state: (i64, i64, i64, i64) = db.query_row("SELECT pending, terminal, failures, (SELECT count(*) FROM events WHERE event LIKE '%verified%') FROM agent_runtime WHERE task_id='task'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
+        assert_eq!(state, (1, 0, 0, 0));
+        drop(db);
+        let mut reopened = SqliteStore::open(&root).unwrap();
+        assert!(!reopened.agent_step("task", 1, 2, 2).unwrap());
+        drop(reopened);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn cancellation_while_waiting_for_approval_lock_rolls_back() {
         use crate::tool_policy::{
             Broker, BrokerError, DataClass, Scope, TaskContract, ToolRequest,
