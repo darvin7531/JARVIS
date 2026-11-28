@@ -652,6 +652,13 @@ fn observe(
         return Err("cancelled");
     }
     let verified = read(&owner.read_approval)? == Some(value);
+    #[cfg(test)]
+    OBSERVE_AFTER_VERIFY.with(|hook| {
+        if let Some(barrier) = hook.borrow().as_ref() {
+            barrier.wait();
+            barrier.wait();
+        }
+    });
     let mut store = SqliteStore::open(&owner.store).map_err(|_| "agent_storage")?;
     // Terminal is durable before reporting: failure to write the checkpoint cannot replay.
     store
@@ -678,6 +685,7 @@ fn observe(
 
 #[cfg(test)]
 thread_local! {
+    static OBSERVE_AFTER_VERIFY: std::cell::RefCell<Option<Arc<std::sync::Barrier>>> = const { std::cell::RefCell::new(None) };
     static FAIL_OUTCOME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FAIL_VERIFICATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -687,6 +695,130 @@ mod tests {
     use super::*;
     use jarvis::storage::Task;
     use serde_json::json;
+
+
+    #[test]
+    fn cancellation_after_verification_read_stays_pending() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::time::Instant;
+    let root = std::env::temp_dir().join(format!("agent-observation-cancel-{}", std::process::id()));
+    let mut store = SqliteStore::create(&root).unwrap();
+    store
+        .create_task(
+            &Task {
+                id: "task".into(),
+                version: 1,
+                title: "diagnose".into(),
+            },
+            "created",
+            &[],
+        )
+        .unwrap();
+    store.initialize_tool_budget(2).unwrap();
+    let expiry = SystemTime::now() + Duration::from_secs(300);
+    let request = ToolRequest {
+        tool: "read".into(),
+        action: "read".into(),
+        resource: "mock/item".into(),
+        data_class: DataClass::Public,
+        arguments: json!({"text":""}),
+    };
+    store
+        .issue_tool_approval("first", "task", 1, &request, expiry)
+        .unwrap();
+    store
+        .issue_tool_approval("verify", "task", 1, &request, expiry)
+        .unwrap();
+    drop(store);
+    let db = rusqlite::Connection::open(root.join("jarvis.sqlite3")).unwrap();
+    db.execute("INSERT INTO mock_state(resource, value, data_class) VALUES ('mock/item', 'unknown seeded value', 'public')", []).unwrap();
+    drop(db);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(10))
+                }
+                Err(_) => return None,
+            }
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut buf = [0; 4096];
+        loop {
+            let n = stream.read(&mut buf).unwrap();
+            if n == 0 {
+                break;
+            }
+            request.extend_from_slice(&buf[..n]);
+            if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&request[..end]);
+                let length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .and_then(|s| s.trim().parse::<usize>().ok())
+                    })
+                    .unwrap();
+                if request.len() >= end + 4 + length {
+                    break;
+                }
+            }
+        }
+        let claim = json!({"kind":"claim", "value":"unknown seeded value"}).to_string();
+        let body = format!(
+            "{}\n{}\n",
+            json!({"response":claim,"done":false}),
+            json!({"response":"","done":true,"done_reason":"stop","prompt_eval_count":20,"eval_count":10})
+        );
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+        Some(String::from_utf8(request).unwrap())
+    });
+    let owner = json!({"store":root,"task":"task","revision":1,"approval":"first","read_approval":"verify","resource":"mock/item","data_class":"public","permitted_text":"","expected":"","expires_unix":expiry.duration_since(UNIX_EPOCH).unwrap().as_secs(),"mode":"observe","context":"Report the observed value as a claim."});
+    let config = json!({"models":[{"name":"model","tier":"t1","capabilities":["text"],"allowed_data":["public"],"trusted_no_truncation":true,"port":port}],"limits":{"max_tokens":100},"budget":{"workspace":root,"limit_tokens":1000,"max_input_tokens":512}});
+    let owner_path = root.join("owner.json");
+    let config_path = root.join("config.json");
+    std::fs::write(&owner_path, owner.to_string()).unwrap();
+    std::fs::write(&config_path, config.to_string()).unwrap();
+
+        let owner: Owner = serde_json::from_slice(&std::fs::read(owner_path).unwrap()).unwrap();
+        let config = crate::chat::agent_config(config_path.as_os_str()).unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let worker_cancelled = Arc::clone(&cancelled);
+        let worker_barrier = Arc::clone(&barrier);
+        let worker = std::thread::spawn(move || {
+            OBSERVE_AFTER_VERIFY.with(|hook| *hook.borrow_mut() = Some(worker_barrier));
+            observe(&owner, &config, expiry, &worker_cancelled)
+        });
+        barrier.wait();
+        cancelled.store(true, Ordering::Relaxed);
+        barrier.wait();
+        assert_eq!(worker.join().unwrap(), Err("cancelled"));
+        server.join().unwrap();
+        let db = rusqlite::Connection::open(root.join("jarvis.sqlite3")).unwrap();
+        let state: (i64, i64, i64, i64) = db.query_row("SELECT (SELECT pending FROM agent_runtime WHERE task_id='task'), (SELECT terminal FROM agent_runtime WHERE task_id='task'), (SELECT count(*) FROM tool_approvals WHERE consumed=1), (SELECT used FROM tool_budget)", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
+        assert_eq!(state, (1, 0, 2, 2));
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn verification_uncertainty_survives_checkpoint_store_failure() {
