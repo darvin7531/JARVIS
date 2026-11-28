@@ -79,7 +79,7 @@ fn configured_agent_reaches_shared_config_validation() {
 #[test]
 fn configured_proposals_require_complete_stream_and_exact_approval() {
     use jarvis::storage::{SqliteStore, Task};
-    use jarvis::tool_policy::{DataClass, ToolRequest};
+    use jarvis::tool_policy::{Broker, BrokerError, DataClass, Scope, TaskContract, ToolRequest};
     use std::{
         io::{Read, Write},
         net::TcpListener,
@@ -224,6 +224,27 @@ fn configured_proposals_require_complete_stream_and_exact_approval() {
         );
         if reason == "stop" && !succeeds {
             assert!(String::from_utf8_lossy(&output.stderr).contains("\"error\":\"agent_tool\""));
+            let contract = TaskContract {
+                scopes: vec![Scope::Write],
+                tool: "write".into(),
+                action: "write".into(),
+                resource: "mock/item".into(),
+                denied_resources: vec![],
+                data_class: DataClass::Public,
+                permitted_text: permitted.into(),
+                expires_at: expiry,
+            };
+            let mut broker = Broker::with_approval(
+                contract,
+                SqliteStore::open(&root).unwrap(),
+                "write".into(),
+                "task".into(),
+                1,
+            );
+            assert_eq!(
+                broker.call(&request("write", proposed)),
+                Err(BrokerError::Denied)
+            );
         }
         let db = rusqlite::Connection::open(root.join("jarvis.sqlite3")).unwrap();
         if reason == "stop" && !succeeds {
