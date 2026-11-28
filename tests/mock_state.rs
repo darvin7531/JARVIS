@@ -295,3 +295,17 @@ fn legacy_unclassified_values_cannot_be_read_or_overwritten() {
     drop(db);
     std::fs::remove_dir_all(path).unwrap();
 }
+
+#[test]
+fn absent_read_is_not_an_empty_value() {
+    let path = std::env::temp_dir().join(format!("jarvis-absent-read-{}", std::process::id()));
+    let mut store = SqliteStore::create(&path).unwrap();
+    store.create_task(&Task { id: "task".into(), version: 1, title: "test".into() }, "created", &[]).unwrap();
+    store.initialize_tool_budget(2).unwrap();
+    let read = request("read", "read", "");
+    store.issue_tool_approval("read", "task", 1, &read, SystemTime::now() + Duration::from_secs(120)).unwrap();
+    let mut broker = Broker::with_approval(contract("read", "read", Scope::Read, ""), store, "read".into(), "task".into(), 1);
+    assert_ne!(broker.call(&read), Ok(String::new()));
+    drop(broker);
+    std::fs::remove_dir_all(path).unwrap();
+}
