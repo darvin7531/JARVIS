@@ -269,6 +269,7 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
         started,
         None,
         &mut false,
+        false,
         &mut |text| {
             let escaped;
             let text = if tty {
@@ -321,6 +322,7 @@ pub fn agent_inference(
         Instant::now(),
         Some(expires),
         &mut dispatched,
+        true,
         &mut |chunk| {
             output.push_str(chunk);
             Ok(())
@@ -342,6 +344,7 @@ fn configured_inference(
     started: Instant,
     expires: Option<SystemTime>,
     dispatched: &mut bool,
+    json: bool,
     emit: &mut dyn FnMut(&str) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
     let timeout = Duration::from_secs(config.limits.timeout_seconds);
@@ -475,7 +478,7 @@ fn configured_inference(
         port: config.models[index].port,
         trusted_no_truncation: config.models[index].trusted_no_truncation,
     }
-    .generate_bounded(
+    .generate_bounded_json(
         &req,
         cancelled,
         &mut |text| {
@@ -485,6 +488,7 @@ fn configured_inference(
             }
         },
         Some(budget.max_input_tokens),
+        json,
     );
     {
         let (store, id) = &mut reservation;

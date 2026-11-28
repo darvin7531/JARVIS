@@ -184,6 +184,7 @@ fn configured_proposals_require_complete_stream_and_exact_approval() {
             }
             let payload: serde_json::Value =
                 serde_json::from_slice(&bytes[body_start..body_start + length]).unwrap();
+            assert_eq!(payload["format"], "json");
             let prompt_text = payload["prompt"].as_str().unwrap();
             assert!(prompt_text.len() <= 2048);
             let prompt: serde_json::Value = serde_json::from_str(prompt_text).unwrap();
