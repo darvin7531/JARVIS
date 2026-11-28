@@ -133,6 +133,9 @@ fn validate_schema(db: &Connection, version: i64) -> Result<(), StorageError> {
     if version >= 14 {
         expected.execute_batch("ALTER TABLE agent_runtime ADD COLUMN closed INTEGER NOT NULL DEFAULT 0 CHECK(closed IN (0, 1));")?;
     }
+    if version >= 15 {
+        expected.execute_batch("CREATE TABLE task_queue (task_id TEXT PRIMARY KEY NOT NULL REFERENCES tasks(id), state TEXT NOT NULL CHECK(state IN ('queued', 'running')), resource TEXT NOT NULL CHECK(length(resource) > 0)); CREATE TABLE task_resource_locks (resource TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL UNIQUE REFERENCES task_queue(task_id));")?;
+    }
     fn definitions(db: &Connection) -> Result<Vec<(String, String)>, StorageError> {
         let mut query = db.prepare(
             "SELECT name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name",
@@ -209,7 +212,7 @@ impl SqliteStore {
         db.execute_batch("PRAGMA foreign_keys = ON;")?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if !(0..=14).contains(&version) {
+        if !(0..=15).contains(&version) {
             return Err(StorageError::UnsupportedSchema);
         }
         if version > 0 {
@@ -276,6 +279,9 @@ impl SqliteStore {
         }
         if version < 14 {
             tx.execute_batch("ALTER TABLE agent_runtime ADD COLUMN closed INTEGER NOT NULL DEFAULT 0 CHECK(closed IN (0, 1)); PRAGMA user_version = 14;")?;
+        }
+        if version < 15 {
+            tx.execute_batch("CREATE TABLE task_queue (task_id TEXT PRIMARY KEY NOT NULL REFERENCES tasks(id), state TEXT NOT NULL CHECK(state IN ('queued', 'running')), resource TEXT NOT NULL CHECK(length(resource) > 0)); CREATE TABLE task_resource_locks (resource TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL UNIQUE REFERENCES task_queue(task_id)); PRAGMA user_version = 15;")?;
         }
         tx.commit()?;
         Ok(Self { db })
