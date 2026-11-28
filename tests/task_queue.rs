@@ -202,7 +202,7 @@ fn migration_preserves_existing_queue_and_locks() {
         .unwrap();
     drop(store);
     let db = Connection::open(dir.join("jarvis.sqlite3")).unwrap();
-    db.execute_batch("DROP TABLE task_resource_locks; DROP TABLE task_queue; CREATE TABLE task_queue (task_id TEXT PRIMARY KEY NOT NULL REFERENCES tasks(id), state TEXT NOT NULL CHECK(state IN ('queued', 'running')), resource TEXT NOT NULL CHECK(length(resource) > 0)); CREATE TABLE task_resource_locks (resource TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL UNIQUE REFERENCES task_queue(task_id)); INSERT INTO task_queue VALUES ('old','running','res'); INSERT INTO task_resource_locks VALUES ('res','old'); PRAGMA user_version=15;").unwrap();
+    db.execute_batch("DROP TABLE task_capacity; DROP TABLE task_resource_locks; DROP TABLE task_queue; CREATE TABLE task_queue (task_id TEXT PRIMARY KEY NOT NULL REFERENCES tasks(id), state TEXT NOT NULL CHECK(state IN ('queued', 'running')), resource TEXT NOT NULL CHECK(length(resource) > 0)); CREATE TABLE task_resource_locks (resource TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL UNIQUE REFERENCES task_queue(task_id)); INSERT INTO task_queue VALUES ('old','running','res'); INSERT INTO task_resource_locks VALUES ('res','old'); PRAGMA user_version=15;").unwrap();
     drop(db);
     drop(SqliteStore::open(&dir).unwrap());
     drop(SqliteStore::open(&dir).unwrap());
