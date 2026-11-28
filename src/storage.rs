@@ -241,7 +241,10 @@ impl SqliteStore {
         let event = serde_json::json!({"type":"task_recovery_closed", "outcome":outcome, "evidence":evidence}).to_string();
         tx.execute("INSERT INTO events (task_id, event, revision, occurred_at) SELECT id, ?2, version, strftime('%Y-%m-%dT%H:%M:%fZ', 'now') FROM tasks WHERE id = ?1", params![task, event])?;
         tx.execute("DELETE FROM task_resource_locks WHERE task_id = ?1", [task])?;
-        tx.execute("UPDATE task_queue SET state = 'cancelled' WHERE task_id = ?1", [task])?;
+        tx.execute(
+            "UPDATE task_queue SET state = 'cancelled' WHERE task_id = ?1",
+            [task],
+        )?;
         tx.commit()?;
         Ok(())
     }
