@@ -54,6 +54,8 @@ jobs:
                   result = json.load(response)
               print("synthetic prompt:", repr(prompt), "response:", repr(result["response"]), "reason:", result.get("done_reason"))
           '
+      - name: Run configured-agent security regression
+        run: cargo test --locked --test agent_configured configured_proposals_require_complete_stream_and_exact_approval -- --exact
       - name: Run real configured-agent approved tool smoke
         run: cargo test --locked --test agent_configured real_ollama_configured_agent_approved_tool -- --ignored --exact
       - name: Run budgeted real-model CLI
