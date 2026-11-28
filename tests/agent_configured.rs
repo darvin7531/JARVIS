@@ -144,22 +144,31 @@ fn configured_proposals_require_complete_stream_and_exact_approval() {
                 }
             };
             let headers = String::from_utf8_lossy(&bytes[..body_start]);
-            let length: usize = headers.lines().find_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                name.eq_ignore_ascii_case("content-length").then(|| value.trim().parse().unwrap())
-            }).unwrap();
+            let length: usize = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse().unwrap())
+                })
+                .unwrap();
             while bytes.len() < body_start + length {
                 let n = stream.read(&mut buf).unwrap();
                 assert!(n > 0);
                 bytes.extend_from_slice(&buf[..n]);
             }
-            let payload: serde_json::Value = serde_json::from_slice(&bytes[body_start..body_start + length]).unwrap();
-            let prompt: serde_json::Value = serde_json::from_str(payload["prompt"].as_str().unwrap()).unwrap();
+            let payload: serde_json::Value =
+                serde_json::from_slice(&bytes[body_start..body_start + length]).unwrap();
+            let prompt: serde_json::Value =
+                serde_json::from_str(payload["prompt"].as_str().unwrap()).unwrap();
             assert_eq!(prompt["objective"], "produce a JSON proposal");
             assert_eq!(prompt["scope"]["tool"], "write");
             assert_eq!(prompt["scope"]["resource"], "mock/item");
             assert_eq!(prompt["scope"]["arguments"]["text"], "approved");
-            assert!(prompt["constraints"].as_str().unwrap().contains("untrusted"));
+            assert!(prompt["constraints"]
+                .as_str()
+                .unwrap()
+                .contains("untrusted"));
             assert!(prompt["proposal_schema"].is_object());
             let body = format!(
                 "{}\n{}\n",
