@@ -1148,8 +1148,9 @@ mod tests {
             "lock_expire" => {
                 db.execute_batch("BEGIN IMMEDIATE").unwrap();
                 assert!(SystemTime::now() < observe_expiry);
+                std::thread::sleep(observe_expiry.duration_since(SystemTime::now()).unwrap_or_default().saturating_sub(Duration::from_millis(50)));
                 barrier.wait();
-                std::thread::sleep(observe_expiry.duration_since(SystemTime::now()).unwrap_or_default() + Duration::from_millis(50));
+                std::thread::sleep(observe_expiry.duration_since(SystemTime::now()).unwrap_or_default() + Duration::from_millis(10));
                 db.execute_batch("COMMIT").unwrap();
             }
             "storage" => (),
