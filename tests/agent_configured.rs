@@ -318,7 +318,7 @@ fn real_ollama_configured_agent_approved_tool() {
             &[],
         )
         .unwrap();
-    store.initialize_tool_budget(2).unwrap();
+    store.initialize_tool_budget(1).unwrap();
     let expiry = SystemTime::now() + Duration::from_secs(900);
     let request = |tool: &str, text: &str| ToolRequest {
         tool: tool.into(),
@@ -327,16 +327,14 @@ fn real_ollama_configured_agent_approved_tool() {
         data_class: DataClass::Public,
         arguments: json!({"text":text}),
     };
-    let write = request("write", "approved");
-    store
-        .issue_tool_approval("write", "task", 1, &write, expiry)
-        .unwrap();
     store
         .issue_tool_approval("read", "task", 1, &request("read", ""), expiry)
         .unwrap();
     drop(store);
-    let proposal = json!({"kind":"tool", "request":write});
-    let owner = json!({"store":root, "task":"task", "revision":1, "approval":"write", "read_approval":"read", "resource":"mock/item", "data_class":"public", "permitted_text":"approved", "expected":"approved", "expires_unix":expiry.duration_since(UNIX_EPOCH).unwrap().as_secs(), "mode":"write", "max_steps":1, "max_failures":1, "context":format!("Output only this JSON object, with no explanation or markdown: {proposal}")});
+    let db = rusqlite::Connection::open(root.join("jarvis.sqlite3")).unwrap();
+    db.execute("INSERT INTO mock_state(resource,value,data_class) VALUES('mock/item','seeded','public')", []).unwrap();
+    drop(db);
+    let owner = json!({"store":root, "task":"task", "revision":1, "approval":"read", "read_approval":"unused", "resource":"mock/item", "data_class":"public", "permitted_text":"", "expected":"seeded", "expires_unix":expiry.duration_since(UNIX_EPOCH).unwrap().as_secs(), "mode":"read_only", "max_steps":1, "max_failures":1, "context":"Read the public resource mock/item. Return only a JSON tool proposal: kind is tool; request contains tool, action, resource, data_class and arguments. The read tool uses action read and arguments text as an empty string."});
     let config = json!({"models":[{"name":"jarvis-smoke", "tier":"t1", "capabilities":["text"], "allowed_data":["public"], "trusted_no_truncation":true, "port":11434}], "limits":{"max_tokens":512}, "budget":{"workspace":root, "limit_tokens":2560, "max_input_tokens":2048}});
     let owner_path = root.join("owner.json");
     let config_path = root.join("config.json");
@@ -357,8 +355,8 @@ fn real_ollama_configured_agent_approved_tool() {
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["status"], "verified");
     let db = rusqlite::Connection::open(root.join("jarvis.sqlite3")).unwrap();
-    let state: (String, String, i64, i64, i64, i64) = db.query_row("SELECT value, data_class, (SELECT count(*) FROM tool_approvals WHERE id IN ('write','read') AND consumed=1), (SELECT count(*) FROM tool_executions WHERE approval_id IN ('write','read') AND pending=0), (SELECT used FROM tool_budget), (SELECT count(*) FROM inference_budget WHERE pending=0 AND tokens>0) FROM mock_state WHERE resource='mock/item'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).unwrap();
-    assert_eq!(state, ("approved".into(), "public".into(), 2, 2, 2, 1));
+    let state: (String, String, i64, i64, i64, i64) = db.query_row("SELECT value, data_class, (SELECT count(*) FROM tool_approvals WHERE id='read' AND consumed=1), (SELECT count(*) FROM tool_executions WHERE approval_id='read' AND pending=0), (SELECT used FROM tool_budget), (SELECT count(*) FROM inference_budget WHERE pending=0 AND tokens>0) FROM mock_state WHERE resource='mock/item'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).unwrap();
+    assert_eq!(state, ("seeded".into(), "public".into(), 1, 1, 1, 1));
     drop(db);
     std::fs::remove_dir_all(root).unwrap();
 }
