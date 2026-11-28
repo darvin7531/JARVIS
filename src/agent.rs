@@ -545,10 +545,10 @@ fn run_owner_inner(
         let db = rusqlite::Connection::open(owner.store.join("jarvis.sqlite3")).unwrap();
         db.execute_batch("CREATE TRIGGER test_reject_read_outcome BEFORE INSERT ON events WHEN NEW.event LIKE '%tool_execution_outcome%' BEGIN SELECT RAISE(ABORT, 'test outcome failure'); END; CREATE TRIGGER test_reject_checkpoint BEFORE INSERT ON events WHEN NEW.event LIKE '%checkpoint%' BEGIN SELECT RAISE(ABORT, 'test checkpoint failure'); END;").unwrap();
     }
-    let observed = broker.call_cancellable(&read, &cancelled);
+    let observed = broker.read_cancellable(&read, &cancelled);
     drop(broker);
     let status = match observed {
-        Ok(value) if value == owner.expected => "verified",
+        Ok(Some(value)) if value == owner.expected => "verified",
         Ok(_) => "verification_failed",
         Err(BrokerError::OutcomeUncertain | BrokerError::ReconciliationRequired) => {
             "verification_uncertain"
