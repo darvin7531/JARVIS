@@ -37,8 +37,9 @@ fn unknown_observation_reaches_inference_and_is_independently_verified() {
         .issue_tool_approval("verify", "task", 1, &request, expiry)
         .unwrap();
     drop(store);
+    let value = "unknown\n\u{1b}[31m\u{202e}value";
     let db = rusqlite::Connection::open(root.join("jarvis.sqlite3")).unwrap();
-    db.execute("INSERT INTO mock_state(resource, value, data_class) VALUES ('mock/item', 'unknown seeded value', 'public')", []).unwrap();
+    db.execute("INSERT INTO mock_state(resource, value, data_class) VALUES ('mock/item', ?1, 'public')", [value]).unwrap();
     drop(db);
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -82,7 +83,7 @@ fn unknown_observation_reaches_inference_and_is_independently_verified() {
                 }
             }
         }
-        let claim = json!({"kind":"claim", "value":"unknown seeded value"}).to_string();
+        let claim = json!({"kind":"claim", "value":value}).to_string();
         let body = format!(
             "{}\n{}\n",
             json!({"response":claim,"done":false}),
@@ -116,7 +117,11 @@ fn unknown_observation_reaches_inference_and_is_independently_verified() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(prompt.unwrap().contains("unknown seeded value"));
+    assert!(prompt.unwrap().contains("unknown"));
+    assert!(output.stdout.iter().all(u8::is_ascii));
+    assert!(!output.stdout.contains(&0x1b));
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["observed"], value);
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()["status"],
         "verified"
