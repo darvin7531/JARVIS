@@ -137,7 +137,10 @@ fn validate_schema(db: &Connection, version: i64) -> Result<(), StorageError> {
         expected.execute_batch("CREATE TABLE task_queue (task_id TEXT PRIMARY KEY NOT NULL REFERENCES tasks(id), state TEXT NOT NULL CHECK(state IN ('queued', 'running')), resource TEXT NOT NULL CHECK(length(resource) > 0)); CREATE TABLE task_resource_locks (resource TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL UNIQUE REFERENCES task_queue(task_id));")?;
     }
     if version >= 16 {
-        expected.execute_batch("CREATE TEMP TABLE saved_locks AS SELECT resource, task_id FROM task_resource_locks; DROP TABLE task_resource_locks; ALTER TABLE task_queue RENAME TO old_task_queue; CREATE TABLE task_queue (task_id TEXT PRIMARY KEY NOT NULL REFERENCES tasks(id), state TEXT NOT NULL CHECK(state IN ('queued', 'running', 'waiting_approval', 'waiting_event', 'paused', 'cancelled')), resource TEXT NOT NULL CHECK(length(resource) > 0), revision INTEGER, wait_key TEXT, wait_request TEXT, checkpoint TEXT, paused_from TEXT, claim_budget_id INTEGER); INSERT INTO task_queue (task_id, state, resource) SELECT task_id, state, resource FROM old_task_queue; DROP TABLE old_task_queue; CREATE TABLE task_resource_locks (resource TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL UNIQUE REFERENCES task_queue(task_id)); INSERT INTO task_resource_locks SELECT resource, task_id FROM saved_locks; DROP TABLE saved_locks;")?;
+        expected.execute_batch("CREATE TEMP TABLE saved_locks AS SELECT resource, task_id FROM task_resource_locks; DROP TABLE task_resource_locks; ALTER TABLE task_queue RENAME TO old_task_queue; CREATE TABLE task_queue (task_id TEXT PRIMARY KEY NOT NULL REFERENCES tasks(id), state TEXT NOT NULL CHECK(state IN ('queued', 'running', 'waiting_approval', 'waiting_event', 'paused', 'cancelled')), resource TEXT NOT NULL CHECK(length(resource) > 0), revision INTEGER, wait_key TEXT, wait_request TEXT, checkpoint TEXT, paused_from TEXT); INSERT INTO task_queue (task_id, state, resource) SELECT task_id, state, resource FROM old_task_queue; DROP TABLE old_task_queue; CREATE TABLE task_resource_locks (resource TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL UNIQUE REFERENCES task_queue(task_id)); INSERT INTO task_resource_locks SELECT resource, task_id FROM saved_locks; DROP TABLE saved_locks;")?;
+    }
+    if version >= 17 {
+        expected.execute_batch("ALTER TABLE task_queue ADD COLUMN claim_budget_id INTEGER;")?;
     }
     fn definitions(db: &Connection) -> Result<Vec<(String, String)>, StorageError> {
         let mut query = db.prepare(
@@ -286,7 +289,7 @@ impl SqliteStore {
         db.execute_batch("PRAGMA foreign_keys = ON;")?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if !(0..=16).contains(&version) {
+        if !(0..=17).contains(&version) {
             return Err(StorageError::UnsupportedSchema);
         }
         if version > 0 {
@@ -358,7 +361,10 @@ impl SqliteStore {
             tx.execute_batch("CREATE TABLE task_queue (task_id TEXT PRIMARY KEY NOT NULL REFERENCES tasks(id), state TEXT NOT NULL CHECK(state IN ('queued', 'running')), resource TEXT NOT NULL CHECK(length(resource) > 0)); CREATE TABLE task_resource_locks (resource TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL UNIQUE REFERENCES task_queue(task_id)); PRAGMA user_version = 15;")?;
         }
         if version < 16 {
-            tx.execute_batch("CREATE TEMP TABLE saved_locks AS SELECT resource, task_id FROM task_resource_locks; DROP TABLE task_resource_locks; ALTER TABLE task_queue RENAME TO old_task_queue; CREATE TABLE task_queue (task_id TEXT PRIMARY KEY NOT NULL REFERENCES tasks(id), state TEXT NOT NULL CHECK(state IN ('queued', 'running', 'waiting_approval', 'waiting_event', 'paused', 'cancelled')), resource TEXT NOT NULL CHECK(length(resource) > 0), revision INTEGER, wait_key TEXT, wait_request TEXT, checkpoint TEXT, paused_from TEXT, claim_budget_id INTEGER); INSERT INTO task_queue (task_id, state, resource) SELECT task_id, state, resource FROM old_task_queue; DROP TABLE old_task_queue; CREATE TABLE task_resource_locks (resource TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL UNIQUE REFERENCES task_queue(task_id)); INSERT INTO task_resource_locks SELECT resource, task_id FROM saved_locks; DROP TABLE saved_locks; PRAGMA user_version = 16;")?;
+            tx.execute_batch("CREATE TEMP TABLE saved_locks AS SELECT resource, task_id FROM task_resource_locks; DROP TABLE task_resource_locks; ALTER TABLE task_queue RENAME TO old_task_queue; CREATE TABLE task_queue (task_id TEXT PRIMARY KEY NOT NULL REFERENCES tasks(id), state TEXT NOT NULL CHECK(state IN ('queued', 'running', 'waiting_approval', 'waiting_event', 'paused', 'cancelled')), resource TEXT NOT NULL CHECK(length(resource) > 0), revision INTEGER, wait_key TEXT, wait_request TEXT, checkpoint TEXT, paused_from TEXT); INSERT INTO task_queue (task_id, state, resource) SELECT task_id, state, resource FROM old_task_queue; DROP TABLE old_task_queue; CREATE TABLE task_resource_locks (resource TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL UNIQUE REFERENCES task_queue(task_id)); INSERT INTO task_resource_locks SELECT resource, task_id FROM saved_locks; DROP TABLE saved_locks; PRAGMA user_version = 16;")?;
+        }
+        if version < 17 {
+            tx.execute_batch("ALTER TABLE task_queue ADD COLUMN claim_budget_id INTEGER; PRAGMA user_version = 17;")?;
         }
         tx.commit()?;
         Ok(Self { db })
@@ -548,7 +554,7 @@ impl SqliteStore {
         }
         let conflict: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM task_resource_locks WHERE resource = ?1 AND task_id != ?2) OR EXISTS(SELECT 1 FROM task_queue WHERE task_id = ?2 AND (state != 'running' OR revision IS NOT ?3 OR resource != ?1 OR NOT EXISTS (SELECT 1 FROM task_resource_locks WHERE task_id = ?2 AND resource = ?1)))", params![request.resource, task, revision], |row| row.get(0))?;
         if conflict {
-            return Ok(None);
+            return Ok(Some(false));
         }
         if matches!(request.tool.as_str(), "read" | "write") {
             let mismatch: bool = tx.query_row(

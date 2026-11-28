@@ -209,6 +209,13 @@ fn migration_preserves_existing_queue_and_locks() {
     let db = Connection::open(dir.join("jarvis.sqlite3")).unwrap();
     let row: (String,String) = db.query_row("SELECT q.state,l.resource FROM task_queue q JOIN task_resource_locks l ON q.task_id=l.task_id WHERE q.task_id='old'", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
     assert_eq!(row, ("running".into(), "res".into()));
+    db.execute_batch("ALTER TABLE task_queue DROP COLUMN claim_budget_id; PRAGMA user_version=16;")
+        .unwrap();
+    drop(db);
+    drop(SqliteStore::open(&dir).unwrap());
+    let db = Connection::open(dir.join("jarvis.sqlite3")).unwrap();
+    let row: (String, String) = db.query_row("SELECT q.state,l.resource FROM task_queue q JOIN task_resource_locks l ON q.task_id=l.task_id WHERE q.task_id='old'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    assert_eq!(row, ("running".into(), "res".into()));
     drop(db);
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -237,6 +244,36 @@ fn queued_task_cannot_start_agent_without_claim() {
     assert!(store.recover_task("task").unwrap());
     assert!(store.claim_task("task").unwrap());
     assert!(store.agent_step("task", 1, 2, 2).unwrap());
+    drop(store);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn stale_claim_and_closed_unstarted_task_cannot_execute_or_requeue() {
+    let dir = std::env::temp_dir().join(format!("jarvis-stale-claim-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut store = SqliteStore::create(&dir).unwrap();
+    let mut task = Task {
+        id: "task".into(),
+        version: 1,
+        title: "task".into(),
+    };
+    store.create_task(&task, "created", &[]).unwrap();
+    store.enqueue_task("task", "resource").unwrap();
+    assert!(store.claim_task("task").unwrap());
+    task.version = 2;
+    store.update_task(&task, "updated").unwrap();
+    assert!(!store.agent_step("task", 2, 2, 2).unwrap());
+    assert!(!store.recover_task("task").unwrap());
+    store
+        .close_recovered_task(
+            "task",
+            jarvis::storage::ReconciliationOutcome::Failed,
+            "owner checked",
+        )
+        .unwrap();
+    assert!(store.enqueue_task("task", "resource").is_err());
+    assert!(!store.agent_step("task", 2, 2, 2).unwrap());
     drop(store);
     std::fs::remove_dir_all(dir).unwrap();
 }
