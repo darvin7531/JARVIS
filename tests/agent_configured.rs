@@ -189,7 +189,10 @@ fn configured_proposals_require_complete_stream_and_exact_approval() {
             let prompt: serde_json::Value = serde_json::from_str(prompt_text).unwrap();
             assert_eq!(prompt["objective"], objective);
             assert!(prompt.get("scope").is_none());
-            assert!(prompt["constraints"].as_str().unwrap().contains("untrusted"));
+            assert!(prompt["constraints"]
+                .as_str()
+                .unwrap()
+                .contains("untrusted"));
             assert!(!prompt_text.contains(permitted));
             let body = format!(
                 "{}\n{}\n",

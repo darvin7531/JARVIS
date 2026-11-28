@@ -42,6 +42,18 @@ jobs:
           assert usage["input_tokens"] > 0 and 0 < usage["output_tokens"] <= 128, usage
           print("\nCLI usage:", usage)
           ' "$RUNNER_TEMP/chat.json"
+      - name: Diagnose synthetic configured-agent fixture
+        run: |
+          python3 -c '
+          from pathlib import Path
+          p = Path("src/agent.rs")
+          s = p.read_text()
+          a = "        // Legacy single-request input remains supported but never supplies authority."
+          assert s.count(a) == 1
+          p.write_text(s.replace(a, "        eprintln!(\"[synthetic-ci] proposal={output}\");\n" + a))
+          '
+          trap 'git checkout -- src/agent.rs' EXIT
+          cargo test --locked --test agent_configured real_ollama_configured_agent_approved_tool -- --ignored --exact
       - name: Run real configured-agent approved tool smoke
         run: for i in 1 2 3; do cargo test --locked --test agent_configured real_ollama_configured_agent_approved_tool -- --ignored --exact || exit; done
       - name: Run budgeted real-model CLI
