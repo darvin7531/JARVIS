@@ -46,8 +46,8 @@ fn direct_broker_cannot_use_another_workers_claim() {
     drop(broker);
     let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
     let state: (String, i64, i64, i64) = db.query_row("SELECT (SELECT value FROM mock_state WHERE resource='mock/item'), (SELECT consumed FROM tool_approvals WHERE id='approval'), (SELECT used FROM tool_budget), (SELECT count(*) FROM tool_executions)", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
-    assert_eq!(result, Err(BrokerError::Denied));
     assert_eq!(state, ("original".into(), 0, 0, 0));
+    assert_eq!(result, Err(BrokerError::Denied));
     drop(db);
     std::fs::remove_dir_all(path).unwrap();
 }
