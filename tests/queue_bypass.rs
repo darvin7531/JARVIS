@@ -4,6 +4,24 @@ use std::time::{Duration, SystemTime};
 
 #[test]
 fn direct_broker_cannot_use_another_workers_claim() {
+    if let Some(path) = std::env::var_os("JARVIS_CLAIM_BYPASS_CHILD") {
+        let store = SqliteStore::open(std::path::Path::new(&path)).unwrap();
+        let request: ToolRequest = serde_json::from_value(serde_json::json!({"tool":"write", "action":"write", "resource":"mock/item", "data_class":"public", "arguments":{"text":"changed"}})).unwrap();
+        let contract = TaskContract {
+            scopes: vec![Scope::Write],
+            tool: "write".into(),
+            action: "write".into(),
+            resource: "mock/item".into(),
+            denied_resources: vec![],
+            data_class: DataClass::Public,
+            permitted_text: "changed".into(),
+            expires_at: SystemTime::now() + Duration::from_secs(600),
+        };
+        let mut broker =
+            Broker::with_approval(contract, store, "approval".into(), "task".into(), 1);
+        assert_eq!(broker.call(&request), Err(BrokerError::Denied));
+        return;
+    }
     let path = std::env::temp_dir().join(format!("jarvis-queue-bypass-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&path);
     let mut store = SqliteStore::create(&path).unwrap();
@@ -40,6 +58,12 @@ fn direct_broker_cannot_use_another_workers_claim() {
         permitted_text: "changed".into(),
         expires_at: expires,
     };
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "direct_broker_cannot_use_another_workers_claim"])
+        .env("JARVIS_CLAIM_BYPASS_CHILD", &path)
+        .status()
+        .unwrap();
+    assert!(child.success());
     let store = SqliteStore::open(&path).unwrap();
     let mut broker = Broker::with_approval(contract, store, "approval".into(), "task".into(), 1);
     let result = broker.call(&request);
