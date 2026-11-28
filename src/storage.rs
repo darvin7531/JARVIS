@@ -133,6 +133,21 @@ fn validate_schema(db: &Connection, version: i64) -> Result<(), StorageError> {
     if version >= 14 {
         expected.execute_batch("ALTER TABLE agent_runtime ADD COLUMN closed INTEGER NOT NULL DEFAULT 0 CHECK(closed IN (0, 1));")?;
     }
+    if version >= 15 {
+        expected.execute_batch("CREATE TABLE task_queue (task_id TEXT PRIMARY KEY NOT NULL REFERENCES tasks(id), state TEXT NOT NULL CHECK(state IN ('queued', 'running')), resource TEXT NOT NULL CHECK(length(resource) > 0)); CREATE TABLE task_resource_locks (resource TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL UNIQUE REFERENCES task_queue(task_id));")?;
+    }
+    if version >= 16 {
+        expected.execute_batch("CREATE TEMP TABLE saved_locks AS SELECT resource, task_id FROM task_resource_locks; DROP TABLE task_resource_locks; ALTER TABLE task_queue RENAME TO old_task_queue; CREATE TABLE task_queue (task_id TEXT PRIMARY KEY NOT NULL REFERENCES tasks(id), state TEXT NOT NULL CHECK(state IN ('queued', 'running', 'waiting_approval', 'waiting_event', 'paused', 'cancelled')), resource TEXT NOT NULL CHECK(length(resource) > 0), revision INTEGER, wait_key TEXT, wait_request TEXT, checkpoint TEXT, paused_from TEXT); INSERT INTO task_queue (task_id, state, resource) SELECT task_id, state, resource FROM old_task_queue; DROP TABLE old_task_queue; CREATE TABLE task_resource_locks (resource TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL UNIQUE REFERENCES task_queue(task_id)); INSERT INTO task_resource_locks SELECT resource, task_id FROM saved_locks; DROP TABLE saved_locks;")?;
+    }
+    if version >= 17 {
+        expected.execute_batch("ALTER TABLE task_queue ADD COLUMN claim_budget_id INTEGER;")?;
+    }
+    if version >= 18 {
+        expected.execute_batch("ALTER TABLE task_queue ADD COLUMN deadline INTEGER; ALTER TABLE task_queue ADD COLUMN foreground INTEGER NOT NULL DEFAULT 0 CHECK(foreground IN (0, 1)); ALTER TABLE task_queue ADD COLUMN retry_limit INTEGER NOT NULL DEFAULT 3 CHECK(retry_limit >= 0 AND retry_limit <= 100); CREATE TABLE task_capacity (id INTEGER PRIMARY KEY CHECK(id = 1), max_running INTEGER NOT NULL CHECK(max_running BETWEEN 1 AND 1024));")?;
+    }
+    if version >= 19 {
+        expected.execute_batch("ALTER TABLE task_queue ADD COLUMN claim_generation INTEGER NOT NULL DEFAULT 0; ALTER TABLE task_queue ADD COLUMN claim_token BLOB;")?;
+    }
     fn definitions(db: &Connection) -> Result<Vec<(String, String)>, StorageError> {
         let mut query = db.prepare(
             "SELECT name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name",
@@ -154,8 +169,37 @@ fn validate_schema(db: &Connection, version: i64) -> Result<(), StorageError> {
     Ok(())
 }
 
+pub struct WorkerClaim {
+    task: String,
+    generation: i64,
+    token: Vec<u8>,
+}
+
 pub struct SqliteStore {
     db: Connection,
+}
+
+fn claim_authorized(
+    db: &Connection,
+    task: &str,
+    revision: i64,
+    claim: Option<&WorkerClaim>,
+) -> Result<bool, StorageError> {
+    let queued: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM task_queue WHERE task_id = ?1)",
+        [task],
+        |r| r.get(0),
+    )?;
+    if !queued {
+        return Ok(claim.is_none());
+    }
+    let Some(claim) = claim else {
+        return Ok(false);
+    };
+    if claim.task != task {
+        return Ok(false);
+    }
+    Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM task_queue q JOIN task_resource_locks l ON l.task_id=q.task_id AND l.resource=q.resource WHERE q.task_id=?1 AND q.state='running' AND q.revision=?2 AND q.claim_generation=?3 AND q.claim_token=?4)", params![task, revision, claim.generation, claim.token], |r| r.get(0))?)
 }
 
 fn mock_class(class: crate::tool_policy::DataClass) -> &'static str {
@@ -166,6 +210,132 @@ fn mock_class(class: crate::tool_policy::DataClass) -> &'static str {
 }
 
 impl SqliteStore {
+    /// Enqueue only a fresh task. Historical executions require a new task ID;
+    /// this avoids silently replaying a reconciled or partially completed run.
+    pub fn enqueue_task(&mut self, task: &str, resource: &str) -> Result<(), StorageError> {
+        let changed = self.db.execute("INSERT INTO task_queue (task_id, state, resource) SELECT id, 'queued', ?2 FROM tasks WHERE id = ?1 AND length(?2) > 0 AND NOT EXISTS (SELECT 1 FROM agent_runtime WHERE task_id = ?1) AND NOT EXISTS (SELECT 1 FROM tool_approvals a JOIN tool_executions e ON e.approval_id = a.id WHERE a.task_id = ?1)", params![task, resource])?;
+        if changed != 1 {
+            return Err(StorageError::OperationFailed);
+        }
+        Ok(())
+    }
+
+    /// Owner-controlled admission policy, only while the task is queued.
+    pub fn set_task_policy(
+        &mut self,
+        task: &str,
+        deadline_unix: Option<i64>,
+        foreground: bool,
+        retry_limit: i64,
+    ) -> Result<(), StorageError> {
+        if deadline_unix.is_some_and(|d| d <= 0) || !(0..=100).contains(&retry_limit) {
+            return Err(StorageError::OperationFailed);
+        }
+        let changed = self.db.execute("UPDATE task_queue SET deadline=?2, foreground=?3, retry_limit=?4 WHERE task_id=?1 AND state='queued' AND NOT EXISTS (SELECT 1 FROM task_resource_locks WHERE task_id=?1)", params![task, deadline_unix, foreground, retry_limit])?;
+        if changed != 1 {
+            return Err(StorageError::OperationFailed);
+        }
+        Ok(())
+    }
+
+    /// Owner controls the shared workspace capacity; running claims are never revoked.
+    pub fn set_task_capacity(&mut self, capacity: i64) -> Result<(), StorageError> {
+        if !(1..=1024).contains(&capacity) {
+            return Err(StorageError::OperationFailed);
+        }
+        if self.db.execute(
+            "UPDATE task_capacity SET max_running=?1 WHERE id=1",
+            [capacity],
+        )? != 1
+        {
+            return Err(StorageError::OperationFailed);
+        }
+        Ok(())
+    }
+
+    /// Claim atomically; unresolved inference has no task identity, so blocks
+    /// the entire workspace until its usage is reconciled.
+    pub fn claim_task(&mut self, task: &str) -> Result<bool, StorageError> {
+        Ok(self.claim_task_identity(task)?.is_some())
+    }
+
+    pub fn claim_task_identity(&mut self, task: &str) -> Result<Option<WorkerClaim>, StorageError> {
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let changed = tx.execute("INSERT OR IGNORE INTO task_resource_locks (resource, task_id) SELECT resource, task_id FROM task_queue WHERE task_id = ?1 AND state = 'queued' AND (revision IS NULL OR revision = (SELECT version FROM tasks WHERE id = ?1)) AND (deadline IS NULL OR deadline > CAST(strftime('%s','now') AS INTEGER)) AND (SELECT count(*) FROM task_queue WHERE state='running') < (SELECT max_running FROM task_capacity WHERE id=1) AND (foreground=1 OR NOT EXISTS (SELECT 1 FROM task_queue f JOIN tasks t ON t.id=f.task_id WHERE f.state='queued' AND f.foreground=1 AND (f.deadline IS NULL OR f.deadline > CAST(strftime('%s','now') AS INTEGER)) AND (f.revision IS NULL OR f.revision=t.version) AND NOT EXISTS (SELECT 1 FROM task_resource_locks l WHERE l.resource=f.resource))) AND NOT EXISTS (SELECT 1 FROM inference_budget WHERE pending = 1) AND NOT EXISTS (SELECT 1 FROM tool_executions WHERE pending = 1) AND NOT EXISTS (SELECT 1 FROM agent_runtime WHERE closed = 0 OR task_id = ?1) AND NOT EXISTS (SELECT 1 FROM tool_approvals a JOIN tool_executions e ON e.approval_id = a.id WHERE a.task_id = ?1)", [task])?;
+        if changed == 1 {
+            tx.execute(
+                "UPDATE task_queue SET state = 'running', claim_generation = claim_generation + 1, claim_token = randomblob(32), revision = (SELECT version FROM tasks WHERE id = ?1), claim_budget_id = (SELECT coalesce(max(id), 0) FROM inference_budget WHERE id > 0) WHERE task_id = ?1",
+                [task],
+            )?;
+        }
+        let claim = if changed == 1 {
+            let (generation, token) = tx.query_row(
+                "SELECT claim_generation, claim_token FROM task_queue WHERE task_id = ?1",
+                [task],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            Some(WorkerClaim {
+                task: task.to_owned(),
+                generation,
+                token,
+            })
+        } else {
+            None
+        };
+        tx.commit()?;
+        Ok(claim)
+    }
+
+    /// Trusted owner only, after stopping every worker. Safe unstarted claims
+    /// can be requeued; evidence of dispatch is never automatically replayed.
+    /// ponytail: any workspace inference since claim blocks retry; add per-task
+    /// inference attribution before relaxing this conservative workspace-wide check.
+    pub fn recover_task(&mut self, task: &str) -> Result<bool, StorageError> {
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let changed = tx.execute("UPDATE task_queue SET state = 'queued' WHERE task_id = ?1 AND state = 'running' AND EXISTS (SELECT 1 FROM task_resource_locks WHERE task_id = ?1 AND resource = task_queue.resource) AND claim_budget_id IS NOT NULL AND claim_budget_id = (SELECT coalesce(max(id), 0) FROM inference_budget WHERE id > 0) AND revision = (SELECT version FROM tasks WHERE id = ?1) AND NOT EXISTS (SELECT 1 FROM inference_budget WHERE pending = 1) AND NOT EXISTS (SELECT 1 FROM tool_executions WHERE pending = 1) AND NOT EXISTS (SELECT 1 FROM agent_runtime WHERE closed = 0 OR task_id = ?1) AND NOT EXISTS (SELECT 1 FROM tool_approvals a JOIN tool_executions e ON e.approval_id = a.id WHERE a.task_id = ?1) AND (SELECT count(*) FROM events WHERE task_id = ?1 AND event = 'task_pre_dispatch_retry') < retry_limit AND (deadline IS NULL OR deadline > CAST(strftime('%s','now') AS INTEGER))", [task])?;
+        if changed == 1 {
+            tx.execute("INSERT INTO events (task_id, event, revision, occurred_at) SELECT id, 'task_pre_dispatch_retry', version, strftime('%Y-%m-%dT%H:%M:%fZ', 'now') FROM tasks WHERE id = ?1", [task])?;
+            tx.execute("DELETE FROM task_resource_locks WHERE task_id = ?1", [task])?;
+        }
+        tx.commit()?;
+        Ok(changed == 1)
+    }
+
+    /// Trusted owner closes a reconciled claim, without requeue or refund.
+    pub fn close_recovered_task(
+        &mut self,
+        task: &str,
+        outcome: ReconciliationOutcome,
+        evidence: &str,
+    ) -> Result<(), StorageError> {
+        if matches!(outcome, ReconciliationOutcome::Unknown)
+            || evidence.trim().is_empty()
+            || evidence.len() > 1024
+        {
+            return Err(StorageError::OperationFailed);
+        }
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let safe: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM task_queue q JOIN task_resource_locks l ON l.task_id = q.task_id AND l.resource = q.resource WHERE q.task_id = ?1 AND q.state = 'running') AND NOT EXISTS (SELECT 1 FROM inference_budget WHERE pending = 1) AND NOT EXISTS (SELECT 1 FROM tool_executions WHERE pending = 1) AND NOT EXISTS (SELECT 1 FROM agent_runtime WHERE task_id = ?1 AND closed = 0)", [task], |r| r.get(0))?;
+        if !safe {
+            return Err(StorageError::OperationFailed);
+        }
+        let event = serde_json::json!({"type":"task_recovery_closed", "outcome":outcome, "evidence":evidence}).to_string();
+        tx.execute("INSERT INTO events (task_id, event, revision, occurred_at) SELECT id, ?2, version, strftime('%Y-%m-%dT%H:%M:%fZ', 'now') FROM tasks WHERE id = ?1", params![task, event])?;
+        tx.execute("DELETE FROM task_resource_locks WHERE task_id = ?1", [task])?;
+        tx.execute(
+            "UPDATE task_queue SET state = 'cancelled' WHERE task_id = ?1",
+            [task],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn create(path: &Path) -> Result<Self, StorageError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|_| StorageError::OperationFailed)?;
@@ -209,7 +379,7 @@ impl SqliteStore {
         db.execute_batch("PRAGMA foreign_keys = ON;")?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if !(0..=14).contains(&version) {
+        if !(0..=19).contains(&version) {
             return Err(StorageError::UnsupportedSchema);
         }
         if version > 0 {
@@ -277,8 +447,111 @@ impl SqliteStore {
         if version < 14 {
             tx.execute_batch("ALTER TABLE agent_runtime ADD COLUMN closed INTEGER NOT NULL DEFAULT 0 CHECK(closed IN (0, 1)); PRAGMA user_version = 14;")?;
         }
+        if version < 15 {
+            tx.execute_batch("CREATE TABLE task_queue (task_id TEXT PRIMARY KEY NOT NULL REFERENCES tasks(id), state TEXT NOT NULL CHECK(state IN ('queued', 'running')), resource TEXT NOT NULL CHECK(length(resource) > 0)); CREATE TABLE task_resource_locks (resource TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL UNIQUE REFERENCES task_queue(task_id)); PRAGMA user_version = 15;")?;
+        }
+        if version < 16 {
+            tx.execute_batch("CREATE TEMP TABLE saved_locks AS SELECT resource, task_id FROM task_resource_locks; DROP TABLE task_resource_locks; ALTER TABLE task_queue RENAME TO old_task_queue; CREATE TABLE task_queue (task_id TEXT PRIMARY KEY NOT NULL REFERENCES tasks(id), state TEXT NOT NULL CHECK(state IN ('queued', 'running', 'waiting_approval', 'waiting_event', 'paused', 'cancelled')), resource TEXT NOT NULL CHECK(length(resource) > 0), revision INTEGER, wait_key TEXT, wait_request TEXT, checkpoint TEXT, paused_from TEXT); INSERT INTO task_queue (task_id, state, resource) SELECT task_id, state, resource FROM old_task_queue; DROP TABLE old_task_queue; CREATE TABLE task_resource_locks (resource TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL UNIQUE REFERENCES task_queue(task_id)); INSERT INTO task_resource_locks SELECT resource, task_id FROM saved_locks; DROP TABLE saved_locks; PRAGMA user_version = 16;")?;
+        }
+        if version < 17 {
+            tx.execute_batch("ALTER TABLE task_queue ADD COLUMN claim_budget_id INTEGER; PRAGMA user_version = 17;")?;
+        }
+        if version < 18 {
+            tx.execute_batch("ALTER TABLE task_queue ADD COLUMN deadline INTEGER; ALTER TABLE task_queue ADD COLUMN foreground INTEGER NOT NULL DEFAULT 0 CHECK(foreground IN (0, 1)); ALTER TABLE task_queue ADD COLUMN retry_limit INTEGER NOT NULL DEFAULT 3 CHECK(retry_limit >= 0 AND retry_limit <= 100); CREATE TABLE task_capacity (id INTEGER PRIMARY KEY CHECK(id = 1), max_running INTEGER NOT NULL CHECK(max_running BETWEEN 1 AND 1024)); INSERT INTO task_capacity VALUES (1, 1); PRAGMA user_version = 18;")?;
+        }
+        if version < 19 {
+            tx.execute_batch("ALTER TABLE task_queue ADD COLUMN claim_generation INTEGER NOT NULL DEFAULT 0; ALTER TABLE task_queue ADD COLUMN claim_token BLOB; PRAGMA user_version = 19;")?;
+        }
         tx.commit()?;
         Ok(Self { db })
+    }
+
+    /// Trusted owner only. Waiting never dispatches work or grants tool authority.
+    pub fn queue_wait(
+        &mut self,
+        task: &str,
+        revision: i64,
+        event: &str,
+        request: Option<&crate::tool_policy::ToolRequest>,
+    ) -> Result<(), StorageError> {
+        if event.is_empty() || event.len() > 1024 {
+            return Err(StorageError::OperationFailed);
+        }
+        let request = request
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|_| StorageError::OperationFailed)?;
+        let state = if request.is_some() {
+            "waiting_approval"
+        } else {
+            "waiting_event"
+        };
+        let changed = self.db.execute("UPDATE task_queue SET state=?4, revision=?2, wait_key=?3, wait_request=?5 WHERE task_id=?1 AND state='queued' AND EXISTS (SELECT 1 FROM tasks WHERE id=?1 AND version=?2) AND NOT EXISTS (SELECT 1 FROM task_resource_locks WHERE task_id=?1)", params![task, revision, event, state, request])?;
+        if changed != 1 {
+            return Err(StorageError::OperationFailed);
+        }
+        Ok(())
+    }
+
+    /// Trusted owner supplies the exact expected event or approval ID. Approval waits
+    /// additionally require the unconsumed, unexpired R05 approval for the exact request.
+    pub fn queue_signal(
+        &mut self,
+        task: &str,
+        revision: i64,
+        key: &str,
+    ) -> Result<(), StorageError> {
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let now = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| StorageError::OperationFailed)?
+                .as_secs(),
+        )
+        .map_err(|_| StorageError::OperationFailed)?;
+        let changed = tx.execute("UPDATE task_queue SET state='queued', wait_key=NULL, wait_request=NULL WHERE task_id=?1 AND revision=?2 AND wait_key=?3 AND EXISTS (SELECT 1 FROM tasks WHERE id=?1 AND version=?2) AND (state='waiting_event' OR (state='waiting_approval' AND EXISTS (SELECT 1 FROM tool_approvals a WHERE a.id=?3 AND a.task_id=?1 AND a.revision=?2 AND a.request=task_queue.wait_request AND a.consumed=0 AND a.expires>?4)))", params![task, revision, key, now])?;
+        if changed != 1 {
+            return Err(StorageError::OperationFailed);
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Pausing is allowed only before dispatch; it preserves the wait and checkpoint.
+    pub fn queue_pause(
+        &mut self,
+        task: &str,
+        revision: i64,
+        checkpoint: &str,
+    ) -> Result<(), StorageError> {
+        if checkpoint.is_empty() || checkpoint.len() > 4096 {
+            return Err(StorageError::OperationFailed);
+        }
+        let changed = self.db.execute("UPDATE task_queue SET paused_from=state, state='paused', revision=?2, checkpoint=?3 WHERE task_id=?1 AND state IN ('queued','waiting_event','waiting_approval') AND (revision IS NULL OR revision=?2) AND EXISTS (SELECT 1 FROM tasks WHERE id=?1 AND version=?2) AND NOT EXISTS (SELECT 1 FROM task_resource_locks WHERE task_id=?1)", params![task, revision, checkpoint])?;
+        if changed != 1 {
+            return Err(StorageError::OperationFailed);
+        }
+        Ok(())
+    }
+
+    /// Restores the previous wait, never a running claim or automatic execution.
+    pub fn queue_resume(&mut self, task: &str, revision: i64) -> Result<(), StorageError> {
+        let changed = self.db.execute("UPDATE task_queue SET state=paused_from, paused_from=NULL WHERE task_id=?1 AND revision=?2 AND state='paused' AND paused_from IN ('queued','waiting_event','waiting_approval') AND EXISTS (SELECT 1 FROM tasks WHERE id=?1 AND version=?2)", params![task, revision])?;
+        if changed != 1 {
+            return Err(StorageError::OperationFailed);
+        }
+        Ok(())
+    }
+
+    /// Durable cancellation before dispatch. Running claims require reconciliation.
+    pub fn queue_cancel(&mut self, task: &str, revision: i64) -> Result<(), StorageError> {
+        let changed = self.db.execute("UPDATE task_queue SET state='cancelled', revision=?2 WHERE task_id=?1 AND state IN ('queued','waiting_event','waiting_approval','paused') AND (revision IS NULL OR revision=?2) AND EXISTS (SELECT 1 FROM tasks WHERE id=?1 AND version=?2) AND NOT EXISTS (SELECT 1 FROM task_resource_locks WHERE task_id=?1)", params![task, revision])?;
+        if changed != 1 {
+            return Err(StorageError::OperationFailed);
+        }
+        Ok(())
     }
 
     // Trusted owner only: untrusted requests must never reach this method.
@@ -352,6 +625,7 @@ impl SqliteStore {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn consume_tool_approval(
         &mut self,
         id: &str,
@@ -359,6 +633,7 @@ impl SqliteStore {
         revision: i64,
         request: &crate::tool_policy::ToolRequest,
         contract_expires: std::time::SystemTime,
+        claim: Option<&WorkerClaim>,
         cancelled: &std::sync::atomic::AtomicBool,
     ) -> Result<Option<bool>, StorageError> {
         let tx = self
@@ -374,6 +649,13 @@ impl SqliteStore {
         )?;
         if pending {
             return Ok(None);
+        }
+        if !claim_authorized(&tx, task, revision, claim)? {
+            return Ok(Some(false));
+        }
+        let conflict: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM task_resource_locks WHERE resource = ?1 AND task_id != ?2) OR EXISTS(SELECT 1 FROM task_queue WHERE task_id = ?2 AND (state != 'running' OR revision IS NOT ?3 OR resource != ?1 OR NOT EXISTS (SELECT 1 FROM task_resource_locks WHERE task_id = ?2 AND resource = ?1)))", params![request.resource, task, revision], |row| row.get(0))?;
+        if conflict {
+            return Ok(Some(false));
         }
         if matches!(request.tool.as_str(), "read" | "write") {
             let mismatch: bool = tx.query_row(
@@ -754,6 +1036,17 @@ impl SqliteStore {
         steps: u32,
         failures: u32,
     ) -> Result<bool, StorageError> {
+        self.agent_step_with_claim(task, revision, steps, failures, None)
+    }
+
+    pub fn agent_step_with_claim(
+        &mut self,
+        task: &str,
+        revision: i64,
+        steps: u32,
+        failures: u32,
+        claim: Option<&WorkerClaim>,
+    ) -> Result<bool, StorageError> {
         let tx = self
             .db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -763,6 +1056,13 @@ impl SqliteStore {
             |row| row.get(0),
         )?;
         if restored {
+            return Ok(false);
+        }
+        if !claim_authorized(&tx, task, revision, claim)? {
+            return Ok(false);
+        }
+        let unclaimed: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM task_queue q WHERE q.task_id = ?1 AND (q.state != 'running' OR q.revision IS NOT ?2 OR NOT EXISTS (SELECT 1 FROM task_resource_locks l WHERE l.task_id = q.task_id AND l.resource = q.resource)))", params![task, revision], |row| row.get(0))?;
+        if unclaimed {
             return Ok(false);
         }
         tx.execute("INSERT OR IGNORE INTO agent_runtime (task_id, revision, max_steps, max_failures, steps, failures, pending, terminal) SELECT id, version, ?3, ?4, 0, 0, 0, 0 FROM tasks WHERE id = ?1 AND version = ?2 AND NOT EXISTS (SELECT 1 FROM events WHERE task_id = ?1 AND revision = ?2 AND event LIKE '%checkpoint%')", params![task, revision, steps, failures])?;
