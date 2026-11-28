@@ -150,7 +150,7 @@ fn configured_proposals_require_complete_stream_and_exact_approval() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let owner = json!({"store":root, "task":"task", "revision":1, "approval":"write", "read_approval":"read", "resource":"mock/item", "data_class":"public", "permitted_text":permitted, "expected":permitted, "expires_unix":expiry.duration_since(UNIX_EPOCH).unwrap().as_secs(), "mode":"write", "context":objective});
-        let config = json!({"models":[{"name":"model", "tier":"t1", "capabilities":["text"], "allowed_data":["public"], "trusted_no_truncation":true, "port":port}], "limits":{"max_tokens":100}, "budget":{"workspace":root, "limit_tokens":1000, "max_input_tokens":200}});
+        let config = json!({"models":[{"name":"model", "tier":"t1", "capabilities":["text"], "allowed_data":["public"], "trusted_no_truncation":true, "port":port}], "limits":{"max_tokens":100}, "budget":{"workspace":root, "limit_tokens":4096, "max_input_tokens":2048}});
         let owner_path = root.join("owner.json");
         let config_path = root.join("config.json");
         std::fs::write(&owner_path, owner.to_string()).unwrap();
@@ -355,6 +355,9 @@ fn configured_rejection_finishes_only_proven_pre_dispatch_steps() {
             listener.set_nonblocking(true).unwrap();
         }
         assert!(!output.status.success());
+        if case == "input" || case == "budget" {
+            assert!(String::from_utf8_lossy(&output.stderr).contains("\"error\":\"budget_exceeded\""));
+        }
         if case != "unknown" {
             assert!(listener.accept().is_err(), "unexpected provider connection");
         }

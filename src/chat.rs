@@ -417,6 +417,10 @@ fn configured_inference(
             .ok_or("unsupported_runtime")?
     };
     let budget = config.budget.as_ref().ok_or("invalid_config")?;
+    // ponytail: byte precheck is not tokenization; runtime must enforce context and usage.
+    if expires.is_some() && prompt.len() > budget.max_input_tokens as usize {
+        return Err("budget_exceeded");
+    }
     let mut reservation = {
         let amount = u64::from(budget.max_input_tokens) + u64::from(config.limits.max_tokens);
         if amount > budget.limit_tokens {
