@@ -659,6 +659,9 @@ fn observe(
             barrier.wait();
         }
     });
+    if cancelled.load(Ordering::Relaxed) {
+        return Err("cancelled");
+    }
     let mut store = SqliteStore::open(&owner.store).map_err(|_| "agent_storage")?;
     // Terminal is durable before reporting: failure to write the checkpoint cannot replay.
     store

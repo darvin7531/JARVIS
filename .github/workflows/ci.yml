@@ -22,6 +22,7 @@ jobs:
       - run: cargo test --locked --test agent_owner
       - run: cargo test --locked --test agent_reconciliation
       - run: cargo test --locked --bin jarvis agent::tests::cancellation_after_verification_read_stays_pending -- --exact
+      - run: cargo test --locked --test agent_observation_crash
       - run: cargo test --locked --bin jarvis agent::tests::post_dispatch_outcome_failure_is_uncertain_and_never_replayed -- --exact
       - run: cargo test --locked --test mock_state
       - run: cargo test --locked --test broker_registry_red inspectable_schema_matches_validator -- --exact
