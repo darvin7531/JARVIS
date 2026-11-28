@@ -196,7 +196,7 @@ fn observation_rejects_untrusted_or_changed_data_and_preserves_presence() {
         let state: (i64, i64, i64, i64, i64) = db.query_row("SELECT (SELECT count(*) FROM tool_approvals WHERE consumed=1), (SELECT count(*) FROM tool_executions WHERE pending=0), (SELECT used FROM tool_budget), (SELECT pending FROM agent_runtime WHERE task_id='task'), (SELECT terminal FROM agent_runtime WHERE task_id='task')", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).unwrap();
         let expected = match case {
             "empty" | "changed" | "removed_empty" => (2, 2, 2, 0, 1),
-            "stored_class" => (1, 0, 1, 1, 0),
+            "stored_class" => (0, 0, 0, 1, 0),
             "wrong_claim" | "injection" | "absent" => (1, 1, 1, 1, 0),
             _ => (0, 0, 0, 1, 0),
         };
