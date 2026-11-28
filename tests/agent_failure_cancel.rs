@@ -46,7 +46,7 @@ fn command(root: &std::path::Path, option: &str, input: &str) -> Command {
 }
 
 #[test]
-fn executor_failure_is_uncertain_and_never_replayed() {
+fn class_mismatch_is_denied_without_execution_or_replay() {
     let (root, request) = setup("failure");
     let db = rusqlite::Connection::open(root.join("jarvis.sqlite3")).unwrap();
     db.execute(
@@ -65,13 +65,13 @@ fn executor_failure_is_uncertain_and_never_replayed() {
         .unwrap();
     assert!(!output.status.success(), "{:?}", output);
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("agent_outcome_uncertain"),
+        String::from_utf8_lossy(&output.stderr).contains("agent_tool"),
         "{:?}",
         output
     );
     let db = rusqlite::Connection::open(root.join("jarvis.sqlite3")).unwrap();
-    let state: (String, String, i64, i64, i64, i64) = db.query_row("SELECT value, data_class, (SELECT consumed FROM tool_approvals WHERE id='write'), (SELECT pending FROM tool_executions WHERE approval_id='write'), (SELECT used FROM tool_budget), (SELECT pending FROM agent_runtime WHERE task_id='task') FROM mock_state WHERE resource='mock/item'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).unwrap();
-    assert_eq!(state, ("original".into(), "sensitive".into(), 1, 1, 1, 1));
+    let state: (String, String, i64, i64, i64, i64) = db.query_row("SELECT value, data_class, (SELECT consumed FROM tool_approvals WHERE id='write'), (SELECT count(*) FROM tool_executions), (SELECT used FROM tool_budget), (SELECT pending FROM agent_runtime WHERE task_id='task') FROM mock_state WHERE resource='mock/item'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).unwrap();
+    assert_eq!(state, ("original".into(), "sensitive".into(), 0, 0, 0, 0));
     drop(db);
     let retry = command(&root, "--mock-response", "proposal.json")
         .output()
@@ -79,7 +79,7 @@ fn executor_failure_is_uncertain_and_never_replayed() {
     assert!(!retry.status.success());
     let db = rusqlite::Connection::open(root.join("jarvis.sqlite3")).unwrap();
     let state: (i64, i64, String) = db.query_row("SELECT (SELECT count(*) FROM tool_executions), (SELECT used FROM tool_budget), (SELECT value FROM mock_state WHERE resource='mock/item')", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
-    assert_eq!(state, (1, 1, "original".into()));
+    assert_eq!(state, (0, 0, "original".into()));
     drop(db);
     std::fs::remove_dir_all(root).unwrap();
 }
