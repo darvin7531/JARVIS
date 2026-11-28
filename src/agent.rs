@@ -847,6 +847,74 @@ mod tests {
         observation_boundary("storage");
     }
 
+    #[test]
+    fn killed_after_observation_verification_never_replays() {
+        use std::io::Read;
+        use std::os::fd::AsRawFd;
+        use std::process::{Command, Stdio};
+        if std::env::var_os("JARVIS_OBSERVATION_VERIFY_CHILD").is_some() {
+            observation_boundary("crash");
+            panic!("child escaped crash boundary");
+        }
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "agent::tests::killed_after_observation_verification_never_replays",
+                "--exact",
+                "--nocapture",
+            ])
+            .env("JARVIS_OBSERVATION_VERIFY_CHILD", "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let root = std::env::temp_dir().join(format!("agent-observation-crash-{}", child.id()));
+        let stderr = child.stderr.as_mut().unwrap();
+        let mut ready = libc::pollfd {
+            fd: stderr.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        if unsafe { libc::poll(&mut ready, 1, 30000) } != 1 {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("child did not reach verification boundary");
+        }
+        let mut marker = [0];
+        stderr.read_exact(&mut marker).unwrap();
+        assert_eq!(marker, [b'!']);
+        child.kill().unwrap();
+        assert!(!child.wait().unwrap().success());
+        let owner = root.join("owner.json");
+        let config = root.join("config.json");
+        assert_eq!(
+            run_configured(owner.as_os_str(), config.as_os_str()),
+            Err("agent_steps")
+        );
+        let db = rusqlite::Connection::open(root.join("jarvis.sqlite3")).unwrap();
+        let state: (i64, i64, i64, i64, i64, i64, i64) = db.query_row("SELECT (SELECT pending FROM agent_runtime WHERE task_id='task'), (SELECT terminal FROM agent_runtime WHERE task_id='task'), (SELECT closed FROM agent_runtime WHERE task_id='task'), (SELECT count(*) FROM tool_approvals WHERE consumed=1), (SELECT count(*) FROM tool_executions WHERE pending=0), (SELECT used FROM tool_budget), (SELECT count(*) FROM events WHERE event LIKE '%checkpoint%')", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).unwrap();
+        assert_eq!(state, (1, 0, 0, 2, 2, 2, 0));
+        drop(db);
+        let mut store = SqliteStore::open(&root).unwrap();
+        store
+            .reconcile_agent_runtime(
+                "task",
+                1,
+                jarvis::storage::ReconciliationOutcome::Unknown,
+                "operator investigated crash",
+            )
+            .unwrap();
+        drop(store);
+        assert_eq!(
+            run_configured(owner.as_os_str(), config.as_os_str()),
+            Err("agent_steps")
+        );
+        let db = rusqlite::Connection::open(root.join("jarvis.sqlite3")).unwrap();
+        let state: (i64, i64, i64, i64) = db.query_row("SELECT (SELECT closed FROM agent_runtime WHERE task_id='task'), (SELECT used FROM tool_budget), (SELECT count(*) FROM tool_executions), (SELECT count(*) FROM events WHERE event LIKE '%agent_runtime_reconciliation%')", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+        assert_eq!(state, (1, 2, 2, 1));
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn observation_boundary(boundary: &str) {
         use std::io::{Read, Write};
         use std::net::TcpListener;
@@ -969,6 +1037,13 @@ mod tests {
             observe(&owner, &config, observe_expiry, &worker_cancelled)
         });
         barrier.wait();
+        if boundary == "crash" {
+            std::io::stderr().write_all(b"!").unwrap();
+            std::io::stderr().flush().unwrap();
+            loop {
+                std::thread::park();
+            }
+        }
         let db = rusqlite::Connection::open(root.join("jarvis.sqlite3")).unwrap();
         match boundary {
             "cancel" => cancelled.store(true, Ordering::Relaxed),
