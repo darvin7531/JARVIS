@@ -188,14 +188,9 @@ fn configured_proposals_require_complete_stream_and_exact_approval() {
             assert!(prompt_text.len() <= 2048);
             let prompt: serde_json::Value = serde_json::from_str(prompt_text).unwrap();
             assert_eq!(prompt["objective"], objective);
-            assert_eq!(prompt["scope"]["tool"], "write");
-            assert_eq!(prompt["scope"]["resource"], "mock/item");
-            assert_eq!(prompt["scope"]["arguments"]["text"], permitted);
-            assert!(prompt["constraints"]
-                .as_str()
-                .unwrap()
-                .contains("untrusted"));
-            assert!(prompt["proposal_formats"].is_object());
+            assert!(prompt.get("scope").is_none());
+            assert!(prompt["constraints"].as_str().unwrap().contains("untrusted"));
+            assert!(!prompt_text.contains(permitted));
             let body = format!(
                 "{}\n{}\n",
                 json!({"response":proposal,"done":false}),
@@ -429,8 +424,7 @@ fn real_ollama_configured_agent_approved_tool() {
         .issue_tool_approval("read", "task", 1, &request("read", ""), expiry)
         .unwrap();
     drop(store);
-    let proposal = json!({"kind":"tool", "request":write});
-    let owner = json!({"store":root, "task":"task", "revision":1, "approval":"write", "read_approval":"read", "resource":"mock/item", "data_class":"public", "permitted_text":"approved", "expected":"approved", "expires_unix":expiry.duration_since(UNIX_EPOCH).unwrap().as_secs(), "mode":"write", "max_steps":1, "max_failures":1, "context":format!("Output only this JSON object, with no explanation or markdown: {proposal}")});
+    let owner = json!({"store":root, "task":"task", "revision":1, "approval":"write", "read_approval":"read", "resource":"mock/item", "data_class":"public", "permitted_text":"approved", "expected":"approved", "expires_unix":expiry.duration_since(UNIX_EPOCH).unwrap().as_secs(), "mode":"write", "max_steps":1, "max_failures":1, "context":"Set the public resource mock/item to the text approved."});
     let config = json!({"models":[{"name":"jarvis-smoke", "tier":"t1", "capabilities":["text"], "allowed_data":["public"], "trusted_no_truncation":true, "port":11434}], "limits":{"max_tokens":512}, "budget":{"workspace":root, "limit_tokens":2560, "max_input_tokens":2048}});
     let owner_path = root.join("owner.json");
     let config_path = root.join("config.json");
