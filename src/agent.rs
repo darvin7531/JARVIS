@@ -475,8 +475,15 @@ fn run_owner_inner(
                 owner.revision,
                 true,
                 r#"{"type":"checkpoint","status":"denied_or_failed"}"#,
+                &cancelled,
             )
-            .map_err(|_| "agent_storage")?;
+            .map_err(|e| {
+                if matches!(e, jarvis::storage::StorageError::Cancelled) {
+                    "cancelled"
+                } else {
+                    "agent_storage"
+                }
+            })?;
         return Err("agent_tool");
     }
     if read_only {
@@ -523,8 +530,15 @@ fn run_owner_inner(
                 owner.revision,
                 !verified,
                 &serde_json::json!({"type":"checkpoint", "status":status, "changes":0}).to_string(),
+                &cancelled,
             )
-            .map_err(|_| "agent_storage")?;
+            .map_err(|e| {
+                if matches!(e, jarvis::storage::StorageError::Cancelled) {
+                    "cancelled"
+                } else {
+                    "agent_storage"
+                }
+            })?;
         if !verified {
             return Err("agent_verify");
         }
@@ -612,8 +626,17 @@ fn run_owner_inner(
             owner.revision,
             status != "verified",
             &serde_json::json!({"type":"checkpoint", "status":status}).to_string(),
+            &cancelled,
         )
-        .map_err(|_| storage_error)?;
+        .map_err(|e| {
+            if matches!(e, jarvis::storage::StorageError::Cancelled)
+                && status != "verification_uncertain"
+            {
+                "cancelled"
+            } else {
+                storage_error
+            }
+        })?;
     if status == "verification_uncertain" {
         return Err("agent_verification_uncertain");
     }
@@ -749,8 +772,15 @@ fn observe(
             owner.revision,
             !verified,
             &serde_json::json!({"type":"checkpoint","status":status,"changes":0}).to_string(),
+            cancelled,
         )
-        .map_err(|_| "agent_storage")?;
+        .map_err(|e| {
+            if matches!(e, jarvis::storage::StorageError::Cancelled) {
+                "cancelled"
+            } else {
+                "agent_storage"
+            }
+        })?;
     if !verified {
         return Err("agent_verify");
     }

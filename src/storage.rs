@@ -36,6 +36,7 @@ pub enum ReconciliationOutcome {
 pub enum StorageError {
     OperationFailed,
     Busy,
+    Cancelled,
     UnsupportedSchema,
 }
 
@@ -44,6 +45,7 @@ impl fmt::Display for StorageError {
         f.write_str(match self {
             Self::OperationFailed => "storage operation failed",
             Self::Busy => "storage busy",
+            Self::Cancelled => "cancelled",
             Self::UnsupportedSchema => "unsupported schema version",
         })
     }
@@ -790,15 +792,23 @@ impl SqliteStore {
         revision: i64,
         failed: bool,
         event: &str,
+        cancelled: &std::sync::atomic::AtomicBool,
     ) -> Result<(), StorageError> {
         let tx = self
             .db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(StorageError::Cancelled);
+        }
         let changed = tx.execute("UPDATE agent_runtime SET failures = failures + ?3, pending = 0, terminal = 1 WHERE task_id = ?1 AND revision = ?2 AND pending = 1 AND terminal = 0 AND closed = 0 AND EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND version = ?2)", params![task, revision, failed as i64])?;
         if changed != 1 {
             return Err(StorageError::OperationFailed);
         }
         tx.execute("INSERT INTO events (task_id, event, revision, occurred_at) VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))", params![task, event, revision])?;
+        // Cancellation racing this last check and commit may still commit.
+        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(StorageError::Cancelled);
+        }
         tx.commit()?;
         Ok(())
     }
@@ -1019,35 +1029,63 @@ mod backup_tests {
 
     #[test]
     fn cancellation_while_waiting_for_result_lock_rolls_back() {
-        use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
         use std::time::Instant;
         static BLOCKED: AtomicBool = AtomicBool::new(false);
         let root = std::env::temp_dir().join(format!("jarvis-result-lock-{}", std::process::id()));
         let mut store = SqliteStore::create(&root).unwrap();
-        store.create_task(&Task { id: "task".into(), version: 1, title: "test".into() }, "created", &[]).unwrap();
+        store
+            .create_task(
+                &Task {
+                    id: "task".into(),
+                    version: 1,
+                    title: "test".into(),
+                },
+                "created",
+                &[],
+            )
+            .unwrap();
         assert!(store.agent_step("task", 1, 2, 2).unwrap());
         let lock = Connection::open(root.join("jarvis.sqlite3")).unwrap();
         lock.execute_batch("BEGIN IMMEDIATE").unwrap();
-        store.db.busy_handler(Some(|_| {
-            BLOCKED.store(true, Ordering::SeqCst);
-            std::thread::sleep(Duration::from_millis(1));
-            true
-        })).unwrap();
+        store
+            .db
+            .busy_handler(Some(|_| {
+                BLOCKED.store(true, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(1));
+                true
+            }))
+            .unwrap();
         let cancelled = Arc::new(AtomicBool::new(false));
         let worker_cancelled = Arc::clone(&cancelled);
         let worker = std::thread::spawn(move || {
             // The existing caller checks before entering the transaction.
             assert!(!worker_cancelled.load(Ordering::SeqCst));
-            store.finish_agent_result("task", 1, false, r#"{"type":"checkpoint","status":"verified"}"#)
+            store.finish_agent_result(
+                "task",
+                1,
+                false,
+                r#"{"type":"checkpoint","status":"verified"}"#,
+                &worker_cancelled,
+            )
         });
         let deadline = Instant::now() + Duration::from_secs(10);
         while !BLOCKED.load(Ordering::SeqCst) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(1));
         }
-        assert!(BLOCKED.load(Ordering::SeqCst), "result never waited for lock");
+        assert!(
+            BLOCKED.load(Ordering::SeqCst),
+            "result never waited for lock"
+        );
         cancelled.store(true, Ordering::SeqCst);
         lock.execute_batch("COMMIT").unwrap();
-        assert!(worker.join().unwrap().is_err(), "cancelled result was committed");
+        assert!(
+            worker.join().unwrap().is_err(),
+            "cancelled result was committed"
+        );
         drop(lock);
         let db = Connection::open(root.join("jarvis.sqlite3")).unwrap();
         let state: (i64, i64, i64, i64) = db.query_row("SELECT pending, terminal, failures, (SELECT count(*) FROM events WHERE event LIKE '%verified%') FROM agent_runtime WHERE task_id='task'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
