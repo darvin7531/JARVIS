@@ -745,6 +745,13 @@ fn observe(
     } else {
         None
     };
+    #[cfg(test)]
+    OBSERVE_BEFORE_RESULT.with(|hook| {
+        if let Some(barrier) = hook.borrow().as_ref() {
+            barrier.wait();
+            barrier.wait();
+        }
+    });
     let status = if verified {
         "verified"
     } else {
@@ -787,6 +794,7 @@ fn observe(
 #[cfg(test)]
 thread_local! {
     static OWNER_AFTER_VERIFY: std::cell::RefCell<Option<std::sync::mpsc::Sender<Arc<AtomicBool>>>> = const { std::cell::RefCell::new(None) };
+    static OBSERVE_BEFORE_RESULT: std::cell::RefCell<Option<Arc<std::sync::Barrier>>> = const { std::cell::RefCell::new(None) };
     static OBSERVE_AFTER_VERIFY: std::cell::RefCell<Option<Arc<std::sync::Barrier>>> = const { std::cell::RefCell::new(None) };
     static FAIL_OBSERVATION_RESULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FAIL_OUTCOME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -996,6 +1004,11 @@ mod tests {
         observation_boundary("storage");
     }
 
+    #[test]
+    fn expiry_while_result_waits_for_lock_stays_pending() {
+        observation_boundary("lock_expire");
+    }
+
     fn observation_boundary(boundary: &str) {
         use std::io::{Read, Write};
         use std::net::TcpListener;
@@ -1106,15 +1119,20 @@ mod tests {
         let barrier = Arc::new(std::sync::Barrier::new(2));
         let worker_cancelled = Arc::clone(&cancelled);
         let worker_barrier = Arc::clone(&barrier);
-        let observe_expiry = if boundary == "expire" {
+        let observe_expiry = if boundary == "expire" || boundary == "lock_expire" {
             SystemTime::now() + Duration::from_secs(5)
         } else {
             expiry
         };
         let fail_result = boundary == "storage";
+        let lock_expire = boundary == "lock_expire";
         let worker = std::thread::spawn(move || {
+            if lock_expire {
+                OBSERVE_BEFORE_RESULT.with(|hook| *hook.borrow_mut() = Some(worker_barrier));
+            } else {
+                OBSERVE_AFTER_VERIFY.with(|hook| *hook.borrow_mut() = Some(worker_barrier));
+            }
             FAIL_OBSERVATION_RESULT.with(|flag| flag.set(fail_result));
-            OBSERVE_AFTER_VERIFY.with(|hook| *hook.borrow_mut() = Some(worker_barrier));
             observe(&owner, &config, observe_expiry, &worker_cancelled)
         });
         barrier.wait();
@@ -1127,13 +1145,22 @@ mod tests {
                     .unwrap_or_default()
                     + Duration::from_millis(50),
             ),
+            "lock_expire" => {
+                db.execute_batch("BEGIN IMMEDIATE").unwrap();
+                assert!(SystemTime::now() < observe_expiry);
+                barrier.wait();
+                std::thread::sleep(observe_expiry.duration_since(SystemTime::now()).unwrap_or_default() + Duration::from_millis(50));
+                db.execute_batch("COMMIT").unwrap();
+            }
             "storage" => (),
             _ => unreachable!(),
         }
-        barrier.wait();
+        if boundary != "lock_expire" {
+            barrier.wait();
+        }
         let expected = match boundary {
             "cancel" => "cancelled",
-            "expire" => "agent_expired",
+            "expire" | "lock_expire" => "agent_expired",
             _ => "agent_storage",
         };
         assert_eq!(worker.join().unwrap(), Err(expected));
