@@ -98,7 +98,7 @@ fn unknown_observation_reaches_inference_and_is_independently_verified() {
         Some(String::from_utf8(request).unwrap())
     });
     let owner = json!({"store":root,"task":"task","revision":1,"approval":"first","read_approval":"verify","resource":"mock/item","data_class":"public","permitted_text":"","expected":"","expires_unix":expiry.duration_since(UNIX_EPOCH).unwrap().as_secs(),"mode":"observe","context":"Report the observed value as a claim."});
-    let config = json!({"models":[{"name":"model","tier":"t1","capabilities":["text"],"allowed_data":["public"],"trusted_no_truncation":true,"port":port}],"limits":{"max_tokens":100},"budget":{"workspace":root,"limit_tokens":1000,"max_input_tokens":200}});
+    let config = json!({"models":[{"name":"model","tier":"t1","capabilities":["text"],"allowed_data":["public"],"trusted_no_truncation":true,"port":port}],"limits":{"max_tokens":100},"budget":{"workspace":root,"limit_tokens":1000,"max_input_tokens":512}});
     let owner_path = root.join("owner.json");
     let config_path = root.join("config.json");
     std::fs::write(&owner_path, owner.to_string()).unwrap();
