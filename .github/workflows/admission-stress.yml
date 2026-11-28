@@ -1,0 +1,19 @@
+name: Admission stress
+on: [push, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  stress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc
+        with:
+          toolchain: 1.89.0
+      - run: cargo test --locked --lib sqlite_contention_is_distinct_and_sanitized
+      - run: |
+          for i in $(seq 1 200); do
+            cargo test --locked --test agent_owner concurrent_admission_and_limit_changes_are_denied -- --exact > stress.log 2>&1 || { cat stress.log; exit 1; }
+          done
+          echo '200 admission iterations passed'
