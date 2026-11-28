@@ -474,6 +474,11 @@ fn configured_inference(
     let mut failure = None;
     // From this boundary onward, failures cannot prove the provider saw nothing.
     *dispatched = true;
+    let proposal_schema = serde_json::json!({"oneOf":[
+        {"type":"object", "properties":{"kind":{"const":"tool"}, "request":{"type":"object", "properties":{"tool":{"type":"string"}, "action":{"type":"string"}, "resource":{"type":"string"}, "data_class":{"enum":["public","sensitive"]}, "arguments":{"type":"object"}}, "required":["tool","action","resource","data_class","arguments"], "additionalProperties":false}}, "required":["kind","request"], "additionalProperties":false},
+        {"type":"object", "properties":{"kind":{"const":"continue"}}, "required":["kind"], "additionalProperties":false},
+        {"type":"object", "properties":{"kind":{"const":"claim"}, "value":{"type":"string"}}, "required":["kind","value"], "additionalProperties":false}
+    ]});
     let result = Ollama {
         port: config.models[index].port,
         trusted_no_truncation: config.models[index].trusted_no_truncation,
@@ -488,7 +493,7 @@ fn configured_inference(
             }
         },
         Some(budget.max_input_tokens),
-        json,
+        json.then_some(&proposal_schema),
     );
     {
         let (store, id) = &mut reservation;
