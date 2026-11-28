@@ -62,11 +62,17 @@ jobs:
           grep -Fx 'admission-diagnostic: busy' diagnostic.log
       - name: Repeat concurrent admission
         run: |
+          busy=0
           for i in $(seq 1 200); do
             if ! cargo test --locked --test agent_owner concurrent_admission_and_limit_changes_are_denied -- --exact --nocapture > diagnostic.log 2>&1; then
               echo "Failed iteration $i"
               cat diagnostic.log
               exit 1
             fi
+            count=$(grep -cFx 'admission-diagnostic: busy' diagnostic.log || true)
+            busy=$((busy + count))
+            if grep '^admission-diagnostic:' diagnostic.log | grep -vFx 'admission-diagnostic: busy'; then
+              echo 'Unexpected diagnostic category'; exit 1
+            fi
           done
-          echo '200 concurrent admission iterations passed'
+          echo "200 concurrent admission iterations passed; busy errors: $busy"

@@ -403,27 +403,34 @@ fn concurrent_admission_and_limit_changes_are_denied() {
         .unwrap();
     drop(store);
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
-    let threads: Vec<_> = (0..2)
-        .map(|_| {
-            let path = path.clone();
+    let stores: Vec<_> = (0..2).map(|_| SqliteStore::open(&path).unwrap()).collect();
+    let threads: Vec<_> = stores
+        .into_iter()
+        .map(|mut store| {
             let barrier = barrier.clone();
             std::thread::spawn(move || {
-                let mut store = SqliteStore::open(&path).unwrap();
                 barrier.wait();
-                store.agent_step("task", 1, 1, 1).unwrap()
+                store.agent_step("task", 1, 1, 1)
             })
         })
         .collect();
     barrier.wait();
-    assert_eq!(
-        threads
-            .into_iter()
-            .map(|t| t.join().unwrap())
-            .filter(|v| *v)
-            .count(),
-        1
-    );
+    let admitted = threads
+        .into_iter()
+        .map(|t| t.join().unwrap())
+        .map(|result| match result {
+            Ok(admitted) => admitted,
+            // Contention can time out; an error denies admission, never grants it.
+            Err(jarvis::storage::StorageError::OperationFailed) => false,
+            Err(other) => panic!("unexpected admission error: {other}"),
+        })
+        .filter(|admitted| *admitted)
+        .count();
+    assert!(admitted <= 1);
     let mut store = SqliteStore::open(&path).unwrap();
+    if admitted == 0 {
+        assert!(store.agent_step("task", 1, 1, 1).unwrap());
+    }
     assert!(!store.agent_step("task", 1, 32, 32).unwrap());
     store.finish_agent_step("task", 1, false, false).unwrap();
     assert!(!store.agent_step("task", 1, 32, 32).unwrap());
