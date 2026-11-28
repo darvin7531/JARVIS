@@ -242,8 +242,10 @@ fn queued_task_cannot_start_agent_without_claim() {
     let mut store = SqliteStore::open(&dir).unwrap();
     assert!(store.claim_task("task").unwrap());
     assert!(store.recover_task("task").unwrap());
-    assert!(store.claim_task("task").unwrap());
-    assert!(store.agent_step("task", 1, 2, 2).unwrap());
+    let claim = store.claim_task_identity("task").unwrap().unwrap();
+    assert!(store
+        .agent_step_with_claim("task", 1, 2, 2, Some(&claim))
+        .unwrap());
     drop(store);
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -313,8 +315,10 @@ fn recovery_preserves_unknown_runtime_and_inference() {
         )
         .unwrap();
     assert!(store.enqueue_task("first", "resource").is_err());
-    assert!(store.claim_task("second").unwrap());
-    assert!(store.agent_step("second", 1, 2, 2).unwrap());
+    let claim = store.claim_task_identity("second").unwrap().unwrap();
+    assert!(store
+        .agent_step_with_claim("second", 1, 2, 2, Some(&claim))
+        .unwrap());
     drop(store);
     let mut store = SqliteStore::open(&dir).unwrap();
     assert!(!store.recover_task("second").unwrap());
