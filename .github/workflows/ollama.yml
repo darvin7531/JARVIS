@@ -47,6 +47,11 @@ jobs:
           python3 -c '
           import json, urllib.request
           proposal = {"kind":"tool", "request":{"tool":"write", "action":"write", "resource":"mock/item", "data_class":"public", "arguments":{"text":"approved"}}}
+          schema = {"oneOf":[{"type":"object","properties":{"kind":{"const":"tool"},"request":{"type":"object","properties":{"tool":{"type":"string"},"action":{"type":"string"},"resource":{"type":"string"},"data_class":{"enum":["public","sensitive"]},"arguments":{"type":"object"}},"required":["tool","action","resource","data_class","arguments"],"additionalProperties":False}},"required":["kind","request"],"additionalProperties":False},{"type":"object","properties":{"kind":{"const":"continue"}},"required":["kind"],"additionalProperties":False}]}
+          data = json.dumps({"model":"jarvis-smoke", "prompt":"Output only this JSON object, with no explanation or markdown: " + json.dumps(proposal, separators=(",", ":")), "format":schema, "stream":False,"truncate":False,"shift":False,"options":{"num_ctx":2048,"num_predict":512}}).encode()
+          req = urllib.request.Request("http://127.0.0.1:11434/api/generate", data=data, headers={"Content-Type":"application/json"})
+          with urllib.request.urlopen(req, timeout=150) as response:
+              print("synthetic structured response:", json.load(response)["response"])
           for prompt in ["Repeat exactly: " + json.dumps(proposal, separators=(",", ":")), "Copy this text exactly, without changes:\n" + json.dumps(proposal, separators=(",", ":")), "Output a JSON object with kind tool and request having tool write, action write, resource mock/item, data_class public and arguments text approved."]:
               data = json.dumps({"model":"jarvis-smoke", "prompt":prompt, "stream":False, "truncate":False, "shift":False, "options":{"num_ctx":2048,"num_predict":512}}).encode()
               req = urllib.request.Request("http://127.0.0.1:11434/api/generate", data=data, headers={"Content-Type":"application/json"})
