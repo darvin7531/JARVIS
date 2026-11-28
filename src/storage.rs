@@ -202,8 +202,9 @@ impl SqliteStore {
         let tx = self
             .db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let changed = tx.execute("UPDATE task_queue SET state = 'queued' WHERE task_id = ?1 AND state = 'running' AND EXISTS (SELECT 1 FROM task_resource_locks WHERE task_id = ?1 AND resource = task_queue.resource) AND NOT EXISTS (SELECT 1 FROM inference_budget WHERE pending = 1) AND NOT EXISTS (SELECT 1 FROM tool_executions WHERE pending = 1) AND NOT EXISTS (SELECT 1 FROM agent_runtime WHERE closed = 0 OR task_id = ?1) AND NOT EXISTS (SELECT 1 FROM tool_approvals a JOIN tool_executions e ON e.approval_id = a.id WHERE a.task_id = ?1)", [task])?;
+        let changed = tx.execute("UPDATE task_queue SET state = 'queued' WHERE task_id = ?1 AND state = 'running' AND EXISTS (SELECT 1 FROM task_resource_locks WHERE task_id = ?1 AND resource = task_queue.resource) AND NOT EXISTS (SELECT 1 FROM inference_budget WHERE pending = 1) AND NOT EXISTS (SELECT 1 FROM tool_executions WHERE pending = 1) AND NOT EXISTS (SELECT 1 FROM agent_runtime WHERE closed = 0 OR task_id = ?1) AND NOT EXISTS (SELECT 1 FROM tool_approvals a JOIN tool_executions e ON e.approval_id = a.id WHERE a.task_id = ?1) AND (SELECT count(*) FROM events WHERE task_id = ?1 AND event = 'task_pre_dispatch_retry') < 3", [task])?;
         if changed == 1 {
+            tx.execute("INSERT INTO events (task_id, event, revision, occurred_at) SELECT id, 'task_pre_dispatch_retry', version, strftime('%Y-%m-%dT%H:%M:%fZ', 'now') FROM tasks WHERE id = ?1", [task])?;
             tx.execute("DELETE FROM task_resource_locks WHERE task_id = ?1", [task])?;
         }
         tx.commit()?;
