@@ -439,8 +439,20 @@ fn run_owner_inner(
     } else {
         None
     };
+    #[cfg(test)]
+    let executor_fault = if FAIL_EXECUTOR.with(|flag| flag.get()) {
+        let db = rusqlite::Connection::open(owner.store.join("jarvis.sqlite3")).unwrap();
+        db.execute_batch("CREATE TRIGGER test_reject_write BEFORE UPDATE ON mock_state BEGIN SELECT RAISE(ABORT, 'test executor failure'); END;").unwrap();
+        Some(db)
+    } else {
+        None
+    };
     let outcome = broker.call_cancellable(&proposal, &cancelled);
     drop(broker);
+    #[cfg(test)]
+    if let Some(db) = executor_fault {
+        db.execute_batch("DROP TRIGGER test_reject_write").unwrap();
+    }
     #[cfg(test)]
     if let Some(db) = fault_db {
         db.execute_batch("DROP TRIGGER test_reject_outcome")
@@ -733,6 +745,7 @@ thread_local! {
     static OBSERVE_AFTER_VERIFY: std::cell::RefCell<Option<Arc<std::sync::Barrier>>> = const { std::cell::RefCell::new(None) };
     static FAIL_OBSERVATION_RESULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FAIL_OUTCOME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_EXECUTOR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FAIL_VERIFICATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static DELETE_AFTER_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -1115,6 +1128,74 @@ mod tests {
         let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
         let state: (i64, i64, i64, i64) = db.query_row("SELECT (SELECT pending FROM tool_executions WHERE approval_id = 'pending'), (SELECT consumed FROM tool_approvals WHERE id = 'write'), (SELECT used FROM tool_budget), (SELECT count(*) FROM mock_state)", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
         assert_eq!(state, (1, 0, 1, 0));
+        drop(db);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn executor_failure_preserves_intent_and_prevents_replay() {
+        let path =
+            std::env::temp_dir().join(format!("agent-executor-failure-{}", std::process::id()));
+        let mut store = SqliteStore::create(&path).unwrap();
+        store
+            .create_task(
+                &Task {
+                    id: "task".into(),
+                    version: 1,
+                    title: "test".into(),
+                },
+                "created",
+                &[],
+            )
+            .unwrap();
+        store.initialize_tool_budget(2).unwrap();
+        let expires = SystemTime::now() + Duration::from_secs(300);
+        let request = ToolRequest {
+            tool: "write".into(),
+            action: "write".into(),
+            resource: "mock/item".into(),
+            data_class: DataClass::Public,
+            arguments: json!({"text":"new"}),
+        };
+        store
+            .issue_tool_approval("write", "task", 1, &request, expires)
+            .unwrap();
+        let read = ToolRequest {
+            tool: "read".into(),
+            action: "read".into(),
+            resource: "mock/item".into(),
+            data_class: DataClass::Public,
+            arguments: json!({"text":""}),
+        };
+        store
+            .issue_tool_approval("read", "task", 1, &read, expires)
+            .unwrap();
+        drop(store);
+        let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
+        db.execute(
+            "INSERT INTO mock_state VALUES ('mock/item', 'original', 'public')",
+            [],
+        )
+        .unwrap();
+        drop(db);
+        let owner = json!({"store":path, "task":"task", "revision":1, "approval":"write", "read_approval":"read", "resource":"mock/item", "data_class":"public", "permitted_text":"new", "expected":"new", "expires_unix":expires.duration_since(UNIX_EPOCH).unwrap().as_secs(), "mode":"write", "context":"test"});
+        let owner_path = path.join("owner.json");
+        let proposal_path = path.join("proposal.json");
+        std::fs::write(&owner_path, owner.to_string()).unwrap();
+        std::fs::write(&proposal_path, serde_json::to_string(&request).unwrap()).unwrap();
+        FAIL_EXECUTOR.with(|flag| flag.set(true));
+        let result = run_owner(owner_path.as_os_str(), proposal_path.as_os_str());
+        FAIL_EXECUTOR.with(|flag| flag.set(false));
+        assert_eq!(result, Err("agent_outcome_uncertain"));
+        assert_eq!(
+            run_owner(owner_path.as_os_str(), proposal_path.as_os_str()),
+            Err("agent_steps")
+        );
+        let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
+        let state: (String, i64, i64, i64, i64, i64, i64, i64, i64) = db.query_row("SELECT (SELECT value FROM mock_state WHERE resource='mock/item'), (SELECT consumed FROM tool_approvals WHERE id='write'), (SELECT consumed FROM tool_approvals WHERE id='read'), (SELECT used FROM tool_budget), (SELECT count(*) FROM tool_executions), (SELECT pending FROM tool_executions WHERE approval_id='write'), (SELECT pending FROM agent_runtime WHERE task_id='task'), (SELECT terminal FROM agent_runtime WHERE task_id='task'), (SELECT failures FROM agent_runtime WHERE task_id='task')", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?))).unwrap();
+        assert_eq!(state, ("original".into(), 1, 0, 1, 1, 1, 1, 0, 0));
+        let outcomes: i64 = db.query_row("SELECT count(*) FROM events WHERE event LIKE '%tool_execution_outcome%' OR event LIKE '%checkpoint%'", [], |r| r.get(0)).unwrap();
+        assert_eq!(outcomes, 0);
         drop(db);
         std::fs::remove_dir_all(path).unwrap();
     }
