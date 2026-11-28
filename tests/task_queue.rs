@@ -351,7 +351,17 @@ fn recovery_is_bounded_across_restart() {
     let dir = std::env::temp_dir().join(format!("jarvis-retry-bound-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let mut store = SqliteStore::create(&dir).unwrap();
-    store.create_task(&Task { id: "t".into(), version: 1, title: "t".into() }, "created", &[]).unwrap();
+    store
+        .create_task(
+            &Task {
+                id: "t".into(),
+                version: 1,
+                title: "t".into(),
+            },
+            "created",
+            &[],
+        )
+        .unwrap();
     store.enqueue_task("t", "r").unwrap();
     for _ in 0..3 {
         assert!(store.claim_task("t").unwrap());
