@@ -136,6 +136,9 @@ fn validate_schema(db: &Connection, version: i64) -> Result<(), StorageError> {
     if version >= 15 {
         expected.execute_batch("CREATE TABLE task_queue (task_id TEXT PRIMARY KEY NOT NULL REFERENCES tasks(id), state TEXT NOT NULL CHECK(state IN ('queued', 'running')), resource TEXT NOT NULL CHECK(length(resource) > 0)); CREATE TABLE task_resource_locks (resource TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL UNIQUE REFERENCES task_queue(task_id));")?;
     }
+    if version >= 16 {
+        expected.execute_batch("CREATE TEMP TABLE saved_locks AS SELECT resource, task_id FROM task_resource_locks; DROP TABLE task_resource_locks; ALTER TABLE task_queue RENAME TO old_task_queue; CREATE TABLE task_queue (task_id TEXT PRIMARY KEY NOT NULL REFERENCES tasks(id), state TEXT NOT NULL CHECK(state IN ('queued', 'running', 'waiting_approval', 'waiting_event', 'paused', 'cancelled')), resource TEXT NOT NULL CHECK(length(resource) > 0), revision INTEGER, wait_key TEXT, wait_request TEXT, checkpoint TEXT, paused_from TEXT); INSERT INTO task_queue (task_id, state, resource) SELECT task_id, state, resource FROM old_task_queue; DROP TABLE old_task_queue; CREATE TABLE task_resource_locks (resource TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL UNIQUE REFERENCES task_queue(task_id)); INSERT INTO task_resource_locks SELECT resource, task_id FROM saved_locks; DROP TABLE saved_locks;")?;
+    }
     fn definitions(db: &Connection) -> Result<Vec<(String, String)>, StorageError> {
         let mut query = db.prepare(
             "SELECT name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name",
@@ -212,7 +215,7 @@ impl SqliteStore {
         db.execute_batch("PRAGMA foreign_keys = ON;")?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if !(0..=15).contains(&version) {
+        if !(0..=16).contains(&version) {
             return Err(StorageError::UnsupportedSchema);
         }
         if version > 0 {
@@ -283,8 +286,99 @@ impl SqliteStore {
         if version < 15 {
             tx.execute_batch("CREATE TABLE task_queue (task_id TEXT PRIMARY KEY NOT NULL REFERENCES tasks(id), state TEXT NOT NULL CHECK(state IN ('queued', 'running')), resource TEXT NOT NULL CHECK(length(resource) > 0)); CREATE TABLE task_resource_locks (resource TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL UNIQUE REFERENCES task_queue(task_id)); PRAGMA user_version = 15;")?;
         }
+        if version < 16 {
+            tx.execute_batch("CREATE TEMP TABLE saved_locks AS SELECT resource, task_id FROM task_resource_locks; DROP TABLE task_resource_locks; ALTER TABLE task_queue RENAME TO old_task_queue; CREATE TABLE task_queue (task_id TEXT PRIMARY KEY NOT NULL REFERENCES tasks(id), state TEXT NOT NULL CHECK(state IN ('queued', 'running', 'waiting_approval', 'waiting_event', 'paused', 'cancelled')), resource TEXT NOT NULL CHECK(length(resource) > 0), revision INTEGER, wait_key TEXT, wait_request TEXT, checkpoint TEXT, paused_from TEXT); INSERT INTO task_queue (task_id, state, resource) SELECT task_id, state, resource FROM old_task_queue; DROP TABLE old_task_queue; CREATE TABLE task_resource_locks (resource TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL UNIQUE REFERENCES task_queue(task_id)); INSERT INTO task_resource_locks SELECT resource, task_id FROM saved_locks; DROP TABLE saved_locks; PRAGMA user_version = 16;")?;
+        }
         tx.commit()?;
         Ok(Self { db })
+    }
+
+    /// Trusted owner only. Waiting never dispatches work or grants tool authority.
+    pub fn queue_wait(
+        &mut self,
+        task: &str,
+        revision: i64,
+        event: &str,
+        request: Option<&crate::tool_policy::ToolRequest>,
+    ) -> Result<(), StorageError> {
+        if event.is_empty() || event.len() > 1024 {
+            return Err(StorageError::OperationFailed);
+        }
+        let request = request
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|_| StorageError::OperationFailed)?;
+        let state = if request.is_some() {
+            "waiting_approval"
+        } else {
+            "waiting_event"
+        };
+        let changed = self.db.execute("UPDATE task_queue SET state=?4, revision=?2, wait_key=?3, wait_request=?5 WHERE task_id=?1 AND state='queued' AND EXISTS (SELECT 1 FROM tasks WHERE id=?1 AND version=?2) AND NOT EXISTS (SELECT 1 FROM task_resource_locks WHERE task_id=?1)", params![task, revision, event, state, request])?;
+        if changed != 1 {
+            return Err(StorageError::OperationFailed);
+        }
+        Ok(())
+    }
+
+    /// Trusted owner supplies the exact expected event or approval ID. Approval waits
+    /// additionally require the unconsumed, unexpired R05 approval for the exact request.
+    pub fn queue_signal(
+        &mut self,
+        task: &str,
+        revision: i64,
+        key: &str,
+    ) -> Result<(), StorageError> {
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let now = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| StorageError::OperationFailed)?
+                .as_secs(),
+        )
+        .map_err(|_| StorageError::OperationFailed)?;
+        let changed = tx.execute("UPDATE task_queue SET state='queued', wait_key=NULL, wait_request=NULL WHERE task_id=?1 AND revision=?2 AND wait_key=?3 AND EXISTS (SELECT 1 FROM tasks WHERE id=?1 AND version=?2) AND (state='waiting_event' OR (state='waiting_approval' AND EXISTS (SELECT 1 FROM tool_approvals a WHERE a.id=?3 AND a.task_id=?1 AND a.revision=?2 AND a.request=task_queue.wait_request AND a.consumed=0 AND a.expires>?4)))", params![task, revision, key, now])?;
+        if changed != 1 {
+            return Err(StorageError::OperationFailed);
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Pausing is allowed only before dispatch; it preserves the wait and checkpoint.
+    pub fn queue_pause(
+        &mut self,
+        task: &str,
+        revision: i64,
+        checkpoint: &str,
+    ) -> Result<(), StorageError> {
+        if checkpoint.is_empty() || checkpoint.len() > 4096 {
+            return Err(StorageError::OperationFailed);
+        }
+        let changed = self.db.execute("UPDATE task_queue SET paused_from=state, state='paused', revision=?2, checkpoint=?3 WHERE task_id=?1 AND state IN ('queued','waiting_event','waiting_approval') AND (revision IS NULL OR revision=?2) AND EXISTS (SELECT 1 FROM tasks WHERE id=?1 AND version=?2) AND NOT EXISTS (SELECT 1 FROM task_resource_locks WHERE task_id=?1)", params![task, revision, checkpoint])?;
+        if changed != 1 {
+            return Err(StorageError::OperationFailed);
+        }
+        Ok(())
+    }
+
+    /// Restores the previous wait, never a running claim or automatic execution.
+    pub fn queue_resume(&mut self, task: &str, revision: i64) -> Result<(), StorageError> {
+        let changed = self.db.execute("UPDATE task_queue SET state=paused_from, paused_from=NULL WHERE task_id=?1 AND revision=?2 AND state='paused' AND paused_from IN ('queued','waiting_event','waiting_approval') AND EXISTS (SELECT 1 FROM tasks WHERE id=?1 AND version=?2)", params![task, revision])?;
+        if changed != 1 {
+            return Err(StorageError::OperationFailed);
+        }
+        Ok(())
+    }
+
+    /// Durable cancellation before dispatch. Running claims require reconciliation.
+    pub fn queue_cancel(&mut self, task: &str, revision: i64) -> Result<(), StorageError> {
+        let changed = self.db.execute("UPDATE task_queue SET state='cancelled', revision=?2 WHERE task_id=?1 AND state IN ('queued','waiting_event','waiting_approval','paused') AND (revision IS NULL OR revision=?2) AND EXISTS (SELECT 1 FROM tasks WHERE id=?1 AND version=?2) AND NOT EXISTS (SELECT 1 FROM task_resource_locks WHERE task_id=?1)", params![task, revision])?;
+        if changed != 1 {
+            return Err(StorageError::OperationFailed);
+        }
+        Ok(())
     }
 
     // Trusted owner only: untrusted requests must never reach this method.
