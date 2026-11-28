@@ -428,7 +428,7 @@ fn real_ollama_configured_agent_approved_tool() {
         .issue_tool_approval("read", "task", 1, &request("read", ""), expiry)
         .unwrap();
     drop(store);
-    let owner = json!({"store":root, "task":"task", "revision":1, "approval":"write", "read_approval":"read", "resource":"mock/item", "data_class":"public", "permitted_text":"approved", "expected":"approved", "expires_unix":expiry.duration_since(UNIX_EPOCH).unwrap().as_secs(), "mode":"write", "max_steps":1, "max_failures":1, "context":"Set the public resource mock/item to the text approved."});
+    let owner = json!({"store":root, "task":"task", "revision":1, "approval":"write", "read_approval":"read", "resource":"mock/item", "data_class":"public", "permitted_text":"approved", "expected":"approved", "expires_unix":expiry.duration_since(UNIX_EPOCH).unwrap().as_secs(), "mode":"write", "max_steps":1, "max_failures":1, "context":"Use the write tool with action write on the public resource mock/item. Set its text to approved."});
     let config = json!({"models":[{"name":"jarvis-smoke", "tier":"t1", "capabilities":["text"], "allowed_data":["public"], "trusted_no_truncation":true, "port":11434}], "limits":{"max_tokens":512}, "budget":{"workspace":root, "limit_tokens":2560, "max_input_tokens":2048}});
     let owner_path = root.join("owner.json");
     let config_path = root.join("config.json");
