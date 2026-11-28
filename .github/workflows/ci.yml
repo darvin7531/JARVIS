@@ -12,12 +12,35 @@ jobs:
         with:
           toolchain: 1.89.0
           components: rustfmt, clippy
+      - run: cargo test --locked --bin jarvis agent::tests::expiry_while_result_waits_for_lock_stays_pending -- --exact
+      - run: cargo test --locked --lib storage::backup_tests::expiry_while_result_waits_for_lock_rolls_back -- --exact
+      - run: cargo test --locked --lib storage::backup_tests::cancellation_while_waiting_for_result_lock_rolls_back -- --exact
+      - run: cargo test --locked --bin jarvis agent::tests::cancellation_at_owner_verification_preserves_durable_effects -- --exact
+      - run: cargo test --locked --test agent_observation --test agent_observation_negative
+      - run: cargo test --locked --lib tool_policy::tests::cancellation_after_write_records_outcome_and_prevents_replay -- --exact
+      - run: cargo test --locked --bin jarvis agent::tests::checkpoint_failure_after_verification_stays_pending -- --exact
+      - run: cargo test --locked --bin jarvis agent::tests::expiry_after_verification_read_stays_pending -- --exact
+      - run: cargo test --locked cancellation_while_waiting_for_approval_lock_rolls_back
+      - run: cargo test --locked --lib tool_policy::tests::killed_after_write_requires_owner_reconciliation -- --exact
+      - run: cargo test --locked --bin jarvis agent::tests::verification_uncertainty_survives_checkpoint_store_failure -- --exact
+      - run: cargo test --locked --bin jarvis agent::tests::existing_pending_tool_requires_agent_reconciliation -- --exact
+      - run: cargo test --locked --test storage --test shared_budget --test tool_broker
+      - run: cargo test --locked --test owner_approval_cli
+      - run: cargo test --locked --test agent_configured
+      - run: cargo test --locked --test agent_owner
+      - run: cargo test --locked --test agent_reconciliation
+      - run: cargo test --locked --bin jarvis agent::tests::cancellation_after_verification_read_stays_pending -- --exact
+      - run: cargo test --locked --test agent_observation_crash
+      - run: cargo test --locked --bin jarvis agent::tests::post_dispatch_outcome_failure_is_uncertain_and_never_replayed -- --exact
+      - run: cargo test --locked --bin jarvis agent::tests::executor_failure_preserves_intent_and_prevents_replay -- --exact
+      - run: cargo test --locked --test mock_state
       - run: cargo test --locked --test broker_registry_red inspectable_schema_matches_validator -- --exact
       - run: cargo test --locked approval_expiring_while_freshness_query_is_locked_is_denied
       - run: cargo test --locked --test broker_registry_red fixed_registry_validates_typed_inert_arguments -- --exact
       - run: cargo test --locked --test tool_broker failed_outcome_write_blocks_further_calls_after_reopen -- --exact
       - run: cargo test --locked --test tool_broker pending_execution_blocks_task_revision_across_connections
       - run: cargo test --locked --test tool_broker contract_expiring_during_intent_commit_never_dispatches
+      - run: cargo test --locked --test storage task_revision_cannot_bypass_unreconciled_agent_step
       - run: cargo test --locked --test tool_broker approval_rejects_oversized_arguments
       - run: cargo test --locked --test tool_broker approval_cannot_be_issued_for_missing_or_stale_task
       - run: cargo test --locked --test tool_broker backup_does_not_revive_pending_approval

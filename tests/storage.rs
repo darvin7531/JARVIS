@@ -155,7 +155,7 @@ fn opens_existing_schema_idempotently() {
     let version: i64 = db
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 10);
+    assert_eq!(version, 14);
     drop(db);
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -242,6 +242,90 @@ fn task_and_audit_writes_work_through_storage_port() {
 }
 
 #[test]
+fn task_revision_cannot_bypass_unreconciled_agent_step() {
+    let dir = std::env::temp_dir().join(format!("jarvis-agent-revision-{}", std::process::id()));
+    let mut store = SqliteStore::create(&dir).unwrap();
+    let task = Task {
+        id: "guarded".into(),
+        version: 1,
+        title: "first".into(),
+    };
+    store.create_task(&task, "created", &[]).unwrap();
+    assert!(store.agent_step("guarded", 1, 1, 1).unwrap());
+    let revised = Task { version: 2, ..task };
+    assert!(store.update_task(&revised, "updated").is_err());
+    store.finish_agent_step("guarded", 1, false, true).unwrap();
+    assert!(store.update_task(&revised, "updated").is_err());
+}
+
+#[test]
+fn agent_runtime_has_durable_closure_separate_from_terminal() {
+    let dir = std::env::temp_dir().join(format!("jarvis-agent-closure-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let store = SqliteStore::create(&dir).unwrap();
+    let db = rusqlite::Connection::open(dir.join("jarvis.sqlite3")).unwrap();
+    let count: i64 = db
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('agent_runtime') WHERE name = 'closed'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        count, 1,
+        "runtime closure must be durable and independent of terminal"
+    );
+    drop(db);
+    drop(store);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn closed_agent_runtime_cannot_resume() {
+    let dir = std::env::temp_dir().join(format!("jarvis-closed-runtime-{}", std::process::id()));
+    let mut store = SqliteStore::create(&dir).unwrap();
+    let task = Task {
+        id: "closed".into(),
+        version: 1,
+        title: "closed".into(),
+    };
+    store.create_task(&task, "created", &[]).unwrap();
+    assert!(store.agent_step("closed", 1, 2, 2).unwrap());
+    store.finish_agent_step("closed", 1, false, false).unwrap();
+    let db = rusqlite::Connection::open(dir.join("jarvis.sqlite3")).unwrap();
+    db.execute("UPDATE agent_runtime SET closed = 1", [])
+        .unwrap();
+    assert!(!store.agent_step("closed", 1, 2, 2).unwrap());
+    drop(db);
+    drop(store);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn explicit_closure_permits_next_revision_only() {
+    let dir = std::env::temp_dir().join(format!("jarvis-closed-revision-{}", std::process::id()));
+    let mut store = SqliteStore::create(&dir).unwrap();
+    let task = Task {
+        id: "closed".into(),
+        version: 1,
+        title: "closed".into(),
+    };
+    store.create_task(&task, "created", &[]).unwrap();
+    assert!(store.agent_step("closed", 1, 2, 2).unwrap());
+    let revised = Task { version: 2, ..task };
+    assert!(store.update_task(&revised, "update").is_err());
+    let db = rusqlite::Connection::open(dir.join("jarvis.sqlite3")).unwrap();
+    db.execute("UPDATE agent_runtime SET closed = 1", [])
+        .unwrap();
+    store.update_task(&revised, "update").unwrap();
+    assert!(!store.agent_step("closed", 1, 2, 2).unwrap());
+    assert!(store.agent_step("closed", 2, 2, 2).unwrap());
+    drop(db);
+    drop(store);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn updating_task_checks_version_and_records_audit_atomically() {
     let dir = std::env::temp_dir().join(format!("jarvis-revision-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -314,7 +398,7 @@ fn migrates_v1_database_forward_without_losing_records() {
     let version: i64 = db
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 10);
+    assert_eq!(version, 14);
     drop(db);
     std::fs::remove_dir_all(dir).unwrap();
 }

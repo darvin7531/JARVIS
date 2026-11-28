@@ -293,7 +293,14 @@ fn expired_and_mismatched_approvals_never_execute() {
             "task",
             1,
             &request(),
-            SystemTime::now() - Duration::from_secs(2),
+            SystemTime::now() + Duration::from_secs(60),
+        )
+        .unwrap();
+    rusqlite::Connection::open(path.join("jarvis.sqlite3"))
+        .unwrap()
+        .execute(
+            "UPDATE tool_approvals SET expires = 0 WHERE id = 'expired'",
+            [],
         )
         .unwrap();
     store
@@ -367,6 +374,27 @@ fn approval_cannot_be_issued_for_missing_or_stale_task() {
     assert!(store
         .issue_tool_approval("valid", "task", 1, &request(), expiry)
         .is_ok());
+}
+
+#[test]
+fn expired_approval_is_not_issued() {
+    let path = std::env::temp_dir().join(format!("jarvis-issue-expired-{}", std::process::id()));
+    let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
+    create_task(&mut store);
+    assert!(store
+        .issue_tool_approval(
+            "expired",
+            "task",
+            1,
+            &request(),
+            SystemTime::now() - Duration::from_secs(2),
+        )
+        .is_err());
+    let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
+    let count: i64 = db
+        .query_row("SELECT count(*) FROM tool_approvals", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 0);
 }
 
 #[test]
@@ -563,9 +591,14 @@ fn failed_outcome_write_blocks_further_calls_after_reopen() {
     db.execute_batch("DROP TRIGGER reject_outcome;").unwrap();
     let store = jarvis::storage::SqliteStore::open(&path).unwrap();
     let mut broker = Broker::with_approval(contract(), store, "two".into(), "task".into(), 1);
-    assert_eq!(broker.call(&request()), Err(BrokerError::Denied));
+    assert_eq!(
+        broker.call(&request()),
+        Err(BrokerError::ReconciliationRequired)
+    );
     assert_eq!(broker.executions(), 0);
     drop(broker);
+    let state: (i64, i64, i64) = db.query_row("SELECT (SELECT pending FROM tool_executions WHERE approval_id = 'one'), (SELECT consumed FROM tool_approvals WHERE id = 'two'), (SELECT used FROM tool_budget)", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+    assert_eq!(state, (1, 0, 1));
     let mut store = jarvis::storage::SqliteStore::open(&path).unwrap();
     db.execute_batch("CREATE TRIGGER reject_reconciliation BEFORE INSERT ON events WHEN NEW.event LIKE '%tool_execution_reconciliation%' BEGIN SELECT RAISE(ABORT, 'failed'); END;").unwrap();
     assert!(store
@@ -725,7 +758,10 @@ fn contract_expiring_during_intent_commit_never_dispatches() {
     let mut short = contract();
     short.expires_at = SystemTime::now() + Duration::from_millis(100);
     let mut broker = Broker::with_approval(short, store, "one".into(), "task".into(), 1);
-    assert_eq!(broker.call(&request()), Err(BrokerError::Denied));
+    assert_eq!(
+        broker.call(&request()),
+        Err(BrokerError::ReconciliationRequired)
+    );
     assert_eq!(broker.executions(), 0);
 }
 
@@ -775,4 +811,83 @@ fn owner_reconciliation_records_each_factual_outcome() {
         .query_row("SELECT used FROM tool_budget", [], |r| r.get(0))
         .unwrap();
     assert_eq!(used, 4);
+}
+
+#[test]
+fn cancellation_before_dispatch_preserves_approval() {
+    use std::sync::atomic::AtomicBool;
+    let mut broker = approved(contract(), request());
+    assert_eq!(
+        broker.call_cancellable(&request(), &AtomicBool::new(true)),
+        Err(BrokerError::Cancelled)
+    );
+    assert_eq!(broker.executions(), 0);
+    assert_eq!(broker.call(&request()), Ok("hello".into()));
+}
+
+#[test]
+fn closed_runtime_denies_unused_approvals_without_charging() {
+    let path = std::env::temp_dir().join(format!("jarvis-closed-broker-{}", std::process::id()));
+    let mut store = jarvis::storage::SqliteStore::create(&path).unwrap();
+    create_task(&mut store);
+    store.initialize_tool_budget(3).unwrap();
+    let mut write = request();
+    write.tool = "write".into();
+    write.action = "write".into();
+    let mut write_contract = contract();
+    write_contract.tool = "write".into();
+    write_contract.action = "write".into();
+    write_contract.scopes = vec![Scope::Write];
+    for (id, text) in [("used", "hello"), ("unused", "changed")] {
+        write.arguments = json!({"text": text});
+        store
+            .issue_tool_approval(
+                id,
+                "task",
+                1,
+                &write,
+                SystemTime::now() + Duration::from_secs(60),
+            )
+            .unwrap();
+    }
+    assert!(store.agent_step("task", 1, 2, 2).unwrap());
+    write.arguments = json!({"text": "hello"});
+    let mut broker = Broker::with_approval(write_contract, store, "used".into(), "task".into(), 1);
+    assert_eq!(broker.call(&write), Ok("hello".into()));
+    drop(broker);
+    let mut store = jarvis::storage::SqliteStore::open(&path).unwrap();
+    store
+        .reconcile_agent_runtime(
+            "task",
+            1,
+            ReconciliationOutcome::Succeeded,
+            "owner evidence",
+        )
+        .unwrap();
+    drop(store);
+    let store = jarvis::storage::SqliteStore::open(&path).unwrap();
+    write.arguments = json!({"text": "changed"});
+    let mut write_contract = contract();
+    write_contract.tool = "write".into();
+    write_contract.action = "write".into();
+    write_contract.scopes = vec![Scope::Write];
+    write_contract.permitted_text = "changed".into();
+    let mut broker =
+        Broker::with_approval(write_contract, store, "unused".into(), "task".into(), 1);
+    assert_eq!(broker.call(&write), Err(BrokerError::Denied));
+    assert_eq!(broker.executions(), 0);
+    let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
+    let state: (i64, i64, i64, i64) = db.query_row("SELECT (SELECT consumed FROM tool_approvals WHERE id='used'), (SELECT consumed FROM tool_approvals WHERE id='unused'), (SELECT used FROM tool_budget), (SELECT count(*) FROM tool_executions)", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
+    assert_eq!(state, (1, 0, 1, 1));
+    let value: String = db
+        .query_row(
+            "SELECT value FROM mock_state WHERE resource = 'task/item'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(value, "hello");
+    drop(db);
+    drop(broker);
+    std::fs::remove_dir_all(path).unwrap();
 }

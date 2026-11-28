@@ -1,3 +1,4 @@
+mod agent;
 mod chat;
 #[allow(dead_code)]
 mod provider;
@@ -67,6 +68,37 @@ fn open_config(path: impl AsRef<std::path::Path>) -> io::Result<File> {
 
 fn run() -> Result<(), Error> {
     let mut args = env::args_os().skip(1).peekable();
+    if args.peek().is_some_and(|arg| arg == "agent") {
+        args.next();
+        let mode = args.next().ok_or(Error::InvalidArguments)?;
+        if mode == "approve" {
+            if args.next().is_none_or(|arg| arg != "--input") {
+                return Err(Error::InvalidArguments);
+            }
+            let input = args.next().ok_or(Error::InvalidArguments)?;
+            if args.next().is_some() {
+                return Err(Error::InvalidArguments);
+            }
+            return agent::approve(&input).map_err(Error::Chat);
+        }
+        if mode == "--owner" {
+            let owner = args.next().ok_or(Error::InvalidArguments)?;
+            let source = args.next().ok_or(Error::InvalidArguments)?;
+            let input = args.next().ok_or(Error::InvalidArguments)?;
+            if args.next().is_some() {
+                return Err(Error::InvalidArguments);
+            }
+            return if source == "--mock-response" {
+                agent::run_owner(&owner, &input)
+            } else if source == "--config" {
+                agent::run_configured(&owner, &input)
+            } else {
+                Err("invalid_arguments")
+            }
+            .map_err(Error::Chat);
+        }
+        return Err(Error::InvalidArguments);
+    }
     if args.peek().is_some_and(|arg| arg == "chat") {
         args.next();
         let backend = args.next().ok_or(Error::InvalidArguments)?;

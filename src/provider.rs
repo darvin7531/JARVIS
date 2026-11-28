@@ -121,11 +121,25 @@ impl Ollama {
         emit: &mut dyn FnMut(&str),
         max_input_tokens: Option<u32>,
     ) -> Result<Usage, Error> {
+        self.generate_bounded_json(r, cancelled, emit, max_input_tokens, None)
+    }
+
+    pub fn generate_bounded_json(
+        &self,
+        r: &Request<'_>,
+        cancelled: &Arc<AtomicBool>,
+        emit: &mut dyn FnMut(&str),
+        max_input_tokens: Option<u32>,
+        format: Option<&serde_json::Value>,
+    ) -> Result<Usage, Error> {
         validate(r, cancelled)?;
         if !self.trusted_no_truncation {
             return Err(Error::InvalidRequest);
         }
         let mut payload = serde_json::json!({"model":r.model,"prompt":r.prompt,"stream":true,"truncate":false,"shift":false,"options":{"num_predict":r.max_tokens}});
+        if let Some(format) = format {
+            payload["format"] = format.clone();
+        }
         if let Some(bound) = max_input_tokens {
             payload["options"]["num_ctx"] = bound.into();
         }

@@ -15,9 +15,9 @@ jobs:
         run: |
           docker run -d --name ollama -e OLLAMA_NO_CLOUD=1 -p 127.0.0.1:11434:11434 ollama/ollama@sha256:2c9595c555fd70a28363489ac03bd5bf9e7c5bdf2890373c3a830ffd7252ce6d
           for i in $(seq 1 60); do curl -fsS http://127.0.0.1:11434/ && break; sleep 1; done
-          docker exec ollama ollama pull smollm2:135m-instruct-q4_0
-          curl -fsS http://127.0.0.1:11434/api/tags | python3 -c 'import json,sys; models=json.load(sys.stdin)["models"]; assert any(m["name"] == "smollm2:135m-instruct-q4_0" and m["digest"] == "dbc9f6c89cb0673427e7215f12b0e71f1bcc716b780ec71da36c8dc6d28ab591" for m in models), "unexpected model digest"'
-          docker exec ollama sh -c 'printf "FROM smollm2:135m-instruct-q4_0\nPARAMETER temperature 0\nPARAMETER seed 42\n" > /tmp/Modelfile && ollama create jarvis-smoke -f /tmp/Modelfile'
+          docker exec ollama ollama pull llama3.2:1b-instruct-q4_K_M
+          curl -fsS http://127.0.0.1:11434/api/tags | python3 -c 'import json,sys; models=json.load(sys.stdin)["models"]; assert any(m["name"] == "llama3.2:1b-instruct-q4_K_M" and m["digest"] == "22bc6b92eb0160c4629782fca05a9032c59d306ab2058b7dacc8a4644fbafa02" for m in models), "unexpected model digest"'
+          docker exec ollama sh -c 'printf "FROM llama3.2:1b-instruct-q4_K_M\nPARAMETER temperature 0\nPARAMETER seed 42\n" > /tmp/Modelfile && ollama create jarvis-smoke -f /tmp/Modelfile'
       - name: Run real provider smoke test
         run: cargo test --locked --test provider_ollama actual_ollama_smoke_when_enabled -- --ignored --exact
       - name: Run real inference through CLI
@@ -42,13 +42,27 @@ jobs:
           assert usage["input_tokens"] > 0 and 0 < usage["output_tokens"] <= 128, usage
           print("\nCLI usage:", usage)
           ' "$RUNNER_TEMP/chat.json"
+      - name: Diagnose synthetic configured-agent fixture
+        run: |
+          python3 -c '
+          from pathlib import Path
+          p = Path("src/agent.rs")
+          s = p.read_text()
+          a = "        // Legacy single-request input remains supported but never supplies authority."
+          assert s.count(a) == 1
+          p.write_text(s.replace(a, "        eprintln!(\"[synthetic-ci] proposal={output}\");\n" + a))
+          '
+          trap 'git checkout -- src/agent.rs' EXIT
+          cargo test --locked --test agent_configured real_ollama_configured_agent_approved_tool -- --ignored --exact
+      - name: Run real configured-agent approved tool smoke
+        run: for i in 1 2 3; do cargo test --locked --test agent_configured real_ollama_configured_agent_approved_tool -- --ignored --exact || exit; done
       - name: Run budgeted real-model CLI
         run: for i in 1 2 3; do cargo test --locked --test budget_safety real_ollama_budgeted_cli -- --ignored --exact; done
       - name: Confirm oversized prompt is accepted when truncation is enabled
         run: |
           python3 -c '
           import json, urllib.request
-          data = json.dumps({"model":"smollm2:135m-instruct-q4_0", "prompt":"hello " * 12000, "stream":False, "truncate":True, "options":{"num_ctx":2048,"num_predict":1}}).encode()
+          data = json.dumps({"model":"llama3.2:1b-instruct-q4_K_M", "prompt":"hello " * 12000, "stream":False, "truncate":True, "options":{"num_ctx":2048,"num_predict":1}}).encode()
           req = urllib.request.Request("http://127.0.0.1:11434/api/generate", data=data, headers={"Content-Type":"application/json"})
           with urllib.request.urlopen(req, timeout=150) as response:
               result = json.load(response)
