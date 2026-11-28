@@ -12,6 +12,8 @@ jobs:
         with:
           toolchain: 1.89.0
           components: rustfmt, clippy
+      - run: cargo test --locked --test agent_observation --test agent_observation_negative
+      - run: cargo test --locked --lib tool_policy::tests::cancellation_after_write_records_outcome_and_prevents_replay -- --exact
       - run: cargo test --locked --bin jarvis agent::tests::checkpoint_failure_after_verification_stays_pending -- --exact
       - run: cargo test --locked --bin jarvis agent::tests::expiry_after_verification_read_stays_pending -- --exact
       - run: cargo test --locked cancellation_while_waiting_for_approval_lock_rolls_back
