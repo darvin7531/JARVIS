@@ -11,5 +11,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc
         with:
           toolchain: 1.89.0
+      - run: cargo test --locked --test scheduler_worker
       - run: cargo test --locked --test queue_bypass
       - run: cargo test --locked --test task_queue

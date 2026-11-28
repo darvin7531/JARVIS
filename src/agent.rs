@@ -226,17 +226,28 @@ fn bounded_file(path: &OsStr) -> Result<String, &'static str> {
 }
 
 pub fn run_owner(owner_file: &OsStr, response_file: &OsStr) -> Result<(), &'static str> {
-    run_owner_inner(owner_file, response_file, false)
+    run_owner_inner(owner_file, response_file, false, None)
 }
 
 pub fn run_configured(owner_file: &OsStr, config_file: &OsStr) -> Result<(), &'static str> {
-    run_owner_inner(owner_file, config_file, true)
+    run_owner_inner(owner_file, config_file, true, None)
+}
+
+// The capability stays in-process and is checked against the durable queue at admission.
+#[allow(dead_code)]
+pub fn run_claimed(
+    owner_file: &OsStr,
+    config_file: &OsStr,
+    claim: jarvis::storage::WorkerClaim,
+) -> Result<(), &'static str> {
+    run_owner_inner(owner_file, config_file, true, Some(&claim))
 }
 
 fn run_owner_inner(
     owner_file: &OsStr,
     input_file: &OsStr,
     configured: bool,
+    claim: Option<&jarvis::storage::WorkerClaim>,
 ) -> Result<(), &'static str> {
     let owner: Owner =
         serde_json::from_str(&bounded_file(owner_file)?).map_err(|_| "agent_input")?;
@@ -261,7 +272,7 @@ fn run_owner_inner(
     };
     if owner.mode == Mode::Observe {
         let config = config.as_ref().ok_or("agent_input")?;
-        return observe(&owner, config, expires, &cancelled);
+        return observe(&owner, config, expires, &cancelled, claim);
     }
     let responses = if configured {
         vec![serde_json::Value::Null; owner.max_steps as usize]
@@ -287,11 +298,12 @@ fn run_owner_inner(
         }
         let mut store = SqliteStore::open(&owner.store).map_err(|_| "agent_storage")?;
         if !store
-            .agent_step(
+            .agent_step_with_claim(
                 &owner.task,
                 owner.revision,
                 owner.max_steps,
                 owner.max_failures,
+                claim,
             )
             .map_err(|_| "agent_storage")?
         {
@@ -431,6 +443,9 @@ fn run_owner_inner(
     } else {
         None
     };
+    if let Some(claim) = claim {
+        broker = broker.with_claim(claim.clone());
+    }
     let outcome = broker.call_cancellable(&proposal, &cancelled);
     drop(broker);
     #[cfg(test)]
@@ -581,6 +596,9 @@ fn run_owner_inner(
         let db = rusqlite::Connection::open(owner.store.join("jarvis.sqlite3")).unwrap();
         db.execute_batch("CREATE TRIGGER test_reject_read_outcome BEFORE INSERT ON events WHEN NEW.event LIKE '%tool_execution_outcome%' BEGIN SELECT RAISE(ABORT, 'test outcome failure'); END; CREATE TRIGGER test_reject_checkpoint BEFORE INSERT ON events WHEN NEW.event LIKE '%checkpoint%' BEGIN SELECT RAISE(ABORT, 'test checkpoint failure'); END;").unwrap();
     }
+    if let Some(claim) = claim {
+        broker = broker.with_claim(claim.clone());
+    }
     let observed = broker.read_cancellable(&read, &cancelled);
     drop(broker);
     #[cfg(test)]
@@ -652,17 +670,19 @@ fn observe(
     config: &crate::chat::Config,
     expires: SystemTime,
     cancelled: &Arc<AtomicBool>,
+    claim: Option<&jarvis::storage::WorkerClaim>,
 ) -> Result<(), &'static str> {
     if owner.approval == owner.read_approval || cancelled.load(Ordering::Relaxed) {
         return Err("agent_input");
     }
     let mut store = SqliteStore::open(&owner.store).map_err(|_| "agent_storage")?;
     if !store
-        .agent_step(
+        .agent_step_with_claim(
             &owner.task,
             owner.revision,
             owner.max_steps,
             owner.max_failures,
+            claim,
         )
         .map_err(|_| "agent_storage")?
     {
@@ -695,6 +715,9 @@ fn observe(
             owner.task.clone(),
             owner.revision,
         );
+        if let Some(claim) = claim {
+            broker = broker.with_claim(claim.clone());
+        }
         broker
             .read_cancellable(&request, cancelled)
             .map_err(|error| match error {
@@ -1147,7 +1170,7 @@ mod tests {
                 OBSERVE_AFTER_VERIFY.with(|hook| *hook.borrow_mut() = Some(worker_barrier));
             }
             FAIL_OBSERVATION_RESULT.with(|flag| flag.set(fail_result));
-            observe(&owner, &config, observe_expiry, &worker_cancelled)
+            observe(&owner, &config, observe_expiry, &worker_cancelled, None)
         });
         barrier.wait();
         let db = rusqlite::Connection::open(root.join("jarvis.sqlite3")).unwrap();

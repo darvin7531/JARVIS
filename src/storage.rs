@@ -166,6 +166,7 @@ fn validate_schema(db: &Connection, version: i64) -> Result<(), StorageError> {
     Ok(())
 }
 
+#[derive(Clone)]
 pub struct WorkerClaim {
     task: String,
     generation: i64,
