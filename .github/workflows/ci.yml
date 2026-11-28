@@ -13,6 +13,7 @@ jobs:
           toolchain: 1.89.0
           components: rustfmt, clippy
       - run: cargo test --locked --bin jarvis agent::tests::expiry_while_result_waits_for_lock_stays_pending -- --exact
+      - run: cargo test --locked --lib storage::backup_tests::expiry_while_result_waits_for_lock_rolls_back -- --exact
       - run: cargo test --locked --lib storage::backup_tests::cancellation_while_waiting_for_result_lock_rolls_back -- --exact
       - run: cargo test --locked --bin jarvis agent::tests::cancellation_at_owner_verification_preserves_durable_effects -- --exact
       - run: cargo test --locked --test agent_observation --test agent_observation_negative

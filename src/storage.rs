@@ -1037,6 +1037,72 @@ mod backup_tests {
     use std::{sync::mpsc, time::Duration};
 
     #[test]
+    fn expiry_while_result_waits_for_lock_rolls_back() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::{Instant, SystemTime};
+        static BLOCKED: AtomicBool = AtomicBool::new(false);
+        let root =
+            std::env::temp_dir().join(format!("jarvis-expiry-result-lock-{}", std::process::id()));
+        let mut store = SqliteStore::create(&root).unwrap();
+        store
+            .create_task(
+                &Task {
+                    id: "task".into(),
+                    version: 1,
+                    title: "test".into(),
+                },
+                "created",
+                &[],
+            )
+            .unwrap();
+        assert!(store.agent_step("task", 1, 2, 2).unwrap());
+        let lock = Connection::open(root.join("jarvis.sqlite3")).unwrap();
+        lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+        store
+            .db
+            .busy_handler(Some(|_| {
+                BLOCKED.store(true, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(1));
+                true
+            }))
+            .unwrap();
+        let expires = SystemTime::now() + Duration::from_secs(2);
+        let worker = std::thread::spawn(move || {
+            store.finish_agent_result(
+                "task",
+                1,
+                false,
+                r#"{"type":"checkpoint","status":"verified"}"#,
+                &AtomicBool::new(false),
+                expires,
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !BLOCKED.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            BLOCKED.load(Ordering::SeqCst),
+            "result never waited for lock"
+        );
+        std::thread::sleep(
+            expires
+                .duration_since(SystemTime::now())
+                .unwrap_or_default()
+                + Duration::from_millis(10),
+        );
+        lock.execute_batch("COMMIT").unwrap();
+        assert!(matches!(worker.join().unwrap(), Err(StorageError::Expired)));
+        let state: (i64, i64, i64) = lock.query_row("SELECT pending, terminal, (SELECT count(*) FROM events WHERE event LIKE '%verified%') FROM agent_runtime WHERE task_id='task'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!(state, (1, 0, 0));
+        drop(lock);
+        let mut reopened = SqliteStore::open(&root).unwrap();
+        assert!(!reopened.agent_step("task", 1, 2, 2).unwrap());
+        drop(reopened);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn cancellation_while_waiting_for_result_lock_rolls_back() {
         use std::sync::{
             atomic::{AtomicBool, Ordering},
