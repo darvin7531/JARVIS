@@ -254,7 +254,7 @@ impl Broker {
             }
         };
         #[cfg(test)]
-        tests::pause_after_write();
+        tests::pause_after_write(cancelled);
         store
             .record_tool_outcome(id, task, *revision)
             .map_err(|_| BrokerError::OutcomeUncertain)?;
@@ -271,12 +271,17 @@ mod tests {
     use std::process::{Command, Stdio};
     use std::time::Duration;
 
-    pub(super) fn pause_after_write() {
-        if std::env::var_os("JARVIS_CRASH_CHILD").is_some() {
+    pub(super) fn pause_after_write(cancelled: &std::sync::atomic::AtomicBool) {
+        if std::env::var_os("JARVIS_CRASH_CHILD").is_some()
+            || std::env::var_os("JARVIS_CANCEL_CHILD").is_some()
+        {
             std::io::stderr().write_all(b"!").unwrap();
             std::io::stderr().flush().unwrap();
             let mut byte = [0];
             std::io::stdin().read_exact(&mut byte).unwrap();
+            if std::env::var_os("JARVIS_CANCEL_CHILD").is_some() {
+                cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
         }
     }
 
@@ -299,6 +304,85 @@ mod tests {
             permitted_text: "written".into(),
             expires_at: SystemTime::now() + Duration::from_secs(600),
         }
+    }
+
+    #[test]
+    fn cancellation_after_write_records_outcome_and_prevents_replay() {
+        use std::sync::atomic::AtomicBool;
+        if let Some(path) = std::env::var_os("JARVIS_CANCEL_CHILD") {
+            let store = SqliteStore::open(std::path::Path::new(&path)).unwrap();
+            let mut broker =
+                Broker::with_approval(contract(), store, "one".into(), "task".into(), 1);
+            let cancelled = AtomicBool::new(false);
+            assert_eq!(
+                broker.call_cancellable(&request(), &cancelled),
+                Ok("written".into())
+            );
+            assert!(cancelled.load(std::sync::atomic::Ordering::SeqCst));
+            return;
+        }
+        let path = std::env::temp_dir().join(format!("jarvis-cancel-write-{}", std::process::id()));
+        let mut store = SqliteStore::create(&path).unwrap();
+        store
+            .create_task(
+                &Task {
+                    id: "task".into(),
+                    version: 1,
+                    title: "test".into(),
+                },
+                "created",
+                &[],
+            )
+            .unwrap();
+        store.initialize_tool_budget(2).unwrap();
+        store
+            .issue_tool_approval(
+                "one",
+                "task",
+                1,
+                &request(),
+                SystemTime::now() + Duration::from_secs(600),
+            )
+            .unwrap();
+        drop(store);
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tool_policy::tests::cancellation_after_write_records_outcome_and_prevents_replay",
+                "--nocapture",
+            ])
+            .env("JARVIS_CANCEL_CHILD", &path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stderr = child.stderr.take().unwrap();
+        let mut poll = libc::pollfd {
+            fd: stderr.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        if unsafe { libc::poll(&mut poll, 1, 30_000) } != 1 {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("child did not reach post-write boundary");
+        }
+        let mut marker = [0];
+        stderr.read_exact(&mut marker).unwrap();
+        assert_eq!(&marker, b"!");
+        child.stdin.take().unwrap().write_all(b"!").unwrap();
+        assert!(child.wait().unwrap().success());
+        let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
+        let state: (String, i64, i64, i64, i64) = db.query_row("SELECT (SELECT value FROM mock_state WHERE resource = 'mock/item'), (SELECT consumed FROM tool_approvals WHERE id = 'one'), (SELECT used FROM tool_budget), (SELECT pending FROM tool_executions WHERE approval_id = 'one'), (SELECT count(*) FROM events WHERE event LIKE '%tool_execution_outcome%')", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).unwrap();
+        assert_eq!(state, ("written".into(), 1, 1, 0, 1));
+        let store = SqliteStore::open(&path).unwrap();
+        let mut broker = Broker::with_approval(contract(), store, "one".into(), "task".into(), 1);
+        assert_eq!(broker.call(&request()), Err(BrokerError::Denied));
+        assert_eq!(broker.executions(), 0);
+        drop(broker);
+        drop(db);
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
