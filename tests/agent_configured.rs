@@ -184,8 +184,9 @@ fn configured_proposals_require_complete_stream_and_exact_approval() {
             }
             let payload: serde_json::Value =
                 serde_json::from_slice(&bytes[body_start..body_start + length]).unwrap();
-            let prompt: serde_json::Value =
-                serde_json::from_str(payload["prompt"].as_str().unwrap()).unwrap();
+            let prompt_text = payload["prompt"].as_str().unwrap();
+            assert!(prompt_text.len() <= 2048);
+            let prompt: serde_json::Value = serde_json::from_str(prompt_text).unwrap();
             assert_eq!(prompt["objective"], objective);
             assert_eq!(prompt["scope"]["tool"], "write");
             assert_eq!(prompt["scope"]["resource"], "mock/item");
@@ -194,7 +195,7 @@ fn configured_proposals_require_complete_stream_and_exact_approval() {
                 .as_str()
                 .unwrap()
                 .contains("untrusted"));
-            assert!(prompt["proposal_schema"].is_object());
+            assert!(prompt["proposal_formats"].is_object());
             let body = format!(
                 "{}\n{}\n",
                 json!({"response":proposal,"done":false}),
@@ -356,7 +357,9 @@ fn configured_rejection_finishes_only_proven_pre_dispatch_steps() {
         }
         assert!(!output.status.success());
         if case == "input" || case == "budget" {
-            assert!(String::from_utf8_lossy(&output.stderr).contains("\"error\":\"budget_exceeded\""));
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("\"error\":\"budget_exceeded\"")
+            );
         }
         if case != "unknown" {
             assert!(listener.accept().is_err(), "unexpected provider connection");
