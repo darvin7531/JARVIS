@@ -37,7 +37,7 @@ fn unknown_observation_reaches_inference_and_is_independently_verified() {
         .issue_tool_approval("verify", "task", 1, &request, expiry)
         .unwrap();
     drop(store);
-    let value = "unknown\n\u{1b}[31m\u{202e}value";
+    let value = "unknown\n\u{1b}[31m\u{7f}\u{202e}value😀";
     let db = rusqlite::Connection::open(root.join("jarvis.sqlite3")).unwrap();
     db.execute("INSERT INTO mock_state(resource, value, data_class) VALUES ('mock/item', ?1, 'public')", [value]).unwrap();
     drop(db);
@@ -120,6 +120,7 @@ fn unknown_observation_reaches_inference_and_is_independently_verified() {
     assert!(prompt.unwrap().contains("unknown"));
     assert!(output.stdout.iter().all(u8::is_ascii));
     assert!(!output.stdout.contains(&0x1b));
+    assert!(!output.stdout.contains(&0x7f));
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["observed"], value);
     assert_eq!(
