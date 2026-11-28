@@ -491,6 +491,8 @@ fn run_owner_inner(
             "verification_failed"
         };
         drop(db);
+        #[cfg(test)]
+        final_read_test_pause(&cancelled);
         let mut store = SqliteStore::open(&owner.store).map_err(|_| "agent_storage")?;
         store
             .finish_agent_result(
@@ -567,6 +569,8 @@ fn run_owner_inner(
     } else {
         "agent_verification_incomplete"
     };
+    #[cfg(test)]
+    final_read_test_pause(&cancelled);
     let mut store = SqliteStore::open(&owner.store).map_err(|_| storage_error)?;
     store
         .finish_agent_result(
@@ -730,6 +734,7 @@ fn observe(
 
 #[cfg(test)]
 thread_local! {
+    static FINAL_READ_HOOK: std::cell::RefCell<Option<(Arc<std::sync::Barrier>, std::sync::mpsc::Sender<Arc<AtomicBool>>)>> = const { std::cell::RefCell::new(None) };
     static OBSERVE_AFTER_VERIFY: std::cell::RefCell<Option<Arc<std::sync::Barrier>>> = const { std::cell::RefCell::new(None) };
     static FAIL_OBSERVATION_RESULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FAIL_OUTCOME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -738,10 +743,81 @@ thread_local! {
 }
 
 #[cfg(test)]
+fn final_read_test_pause(cancelled: &Arc<AtomicBool>) {
+    FINAL_READ_HOOK.with(|hook| {
+        if let Some((barrier, sender)) = hook.borrow().as_ref() {
+            sender.send(Arc::clone(cancelled)).unwrap();
+            barrier.wait();
+        }
+    });
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use jarvis::storage::Task;
     use serde_json::json;
+
+    #[test]
+    fn final_read_cancellation_and_expiry_stay_pending() {
+        for mode in ["write", "read_only"] {
+            for boundary in ["cancel", "expire"] {
+                let root = std::env::temp_dir().join(format!(
+                    "agent-final-read-{}-{mode}-{boundary}",
+                    std::process::id()
+                ));
+                let mut store = SqliteStore::create(&root).unwrap();
+                store.create_task(&Task { id: "task".into(), version: 1, title: "test".into() }, "created", &[]).unwrap();
+                store.initialize_tool_budget(2).unwrap();
+                let expiry = SystemTime::now() + Duration::from_secs(15);
+                let request = |tool: &str| ToolRequest {
+                    tool: tool.into(), action: tool.into(), resource: "mock/item".into(),
+                    data_class: DataClass::Public,
+                    arguments: json!({"text": if tool == "write" { "value" } else { "" }}),
+                };
+                let tool = if mode == "write" { "write" } else { "read" };
+                store.issue_tool_approval("first", "task", 1, &request(tool), expiry).unwrap();
+                if mode == "write" {
+                    store.issue_tool_approval("verify", "task", 1, &request("read"), expiry).unwrap();
+                }
+                drop(store);
+                let db = rusqlite::Connection::open(root.join("jarvis.sqlite3")).unwrap();
+                db.execute("INSERT INTO mock_state VALUES ('mock/item', 'value', 'public')", []).unwrap();
+                drop(db);
+                let expires_unix = expiry.duration_since(UNIX_EPOCH).unwrap().as_secs();
+                let owner = json!({"store":root,"task":"task","revision":1,"approval":"first","read_approval":"verify","resource":"mock/item","data_class":"public","permitted_text":"value","expected":"value","expires_unix":expires_unix,"mode":mode,"context":"test"});
+                let owner_path = root.join("owner.json");
+                let proposal_path = root.join("proposal.json");
+                std::fs::write(&owner_path, owner.to_string()).unwrap();
+                std::fs::write(&proposal_path, serde_json::to_string(&request(tool)).unwrap()).unwrap();
+                let barrier = Arc::new(std::sync::Barrier::new(2));
+                let worker_barrier = Arc::clone(&barrier);
+                let (sender, receiver) = std::sync::mpsc::channel();
+                let worker = std::thread::spawn(move || {
+                    FINAL_READ_HOOK.with(|hook| *hook.borrow_mut() = Some((worker_barrier, sender)));
+                    run_owner(owner_path.as_os_str(), proposal_path.as_os_str())
+                });
+                let cancelled = receiver.recv_timeout(Duration::from_secs(10)).unwrap();
+                if boundary == "cancel" {
+                    cancelled.store(true, Ordering::Relaxed);
+                } else {
+                    let deadline = UNIX_EPOCH + Duration::from_secs(expires_unix);
+                    std::thread::sleep(deadline.duration_since(SystemTime::now()).unwrap_or_default() + Duration::from_millis(50));
+                }
+                barrier.wait();
+                assert_eq!(worker.join().unwrap(), Err(if boundary == "cancel" { "cancelled" } else { "agent_expired" }));
+                let mut reopened = SqliteStore::open(&root).unwrap();
+                assert!(!reopened.agent_step("task", 1, 1, 1).unwrap());
+                drop(reopened);
+                let db = rusqlite::Connection::open(root.join("jarvis.sqlite3")).unwrap();
+                let state: (i64, i64, i64, i64, i64, i64) = db.query_row("SELECT (SELECT pending FROM agent_runtime WHERE task_id='task'), (SELECT terminal FROM agent_runtime WHERE task_id='task'), (SELECT count(*) FROM tool_approvals WHERE consumed=1), (SELECT used FROM tool_budget), (SELECT count(*) FROM tool_executions WHERE pending=0), (SELECT count(*) FROM events WHERE event LIKE '%verified%')", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).unwrap();
+                let count = if mode == "write" { 2 } else { 1 };
+                assert_eq!(state, (1, 0, count, count, count, 0));
+                drop(db);
+                std::fs::remove_dir_all(root).unwrap();
+            }
+        }
+    }
 
     #[test]
     fn empty_write_verification_requires_present_row() {
