@@ -98,7 +98,7 @@ fn owner_wait_pause_resume_cancel_survive_restart() {
     let dir = std::env::temp_dir().join(format!("jarvis-lifecycle-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let mut store = SqliteStore::create(&dir).unwrap();
-    for id in ["a", "b"] {
+    for id in ["a", "b", "c", "d"] {
         store
             .create_task(
                 &Task {
@@ -113,7 +113,7 @@ fn owner_wait_pause_resume_cancel_survive_restart() {
     }
     drop(store);
     let db = Connection::open(dir.join("jarvis.sqlite3")).unwrap();
-    db.execute_batch("INSERT INTO task_queue (task_id,state,resource) VALUES ('a','queued','a'),('b','queued','b')").unwrap();
+    db.execute_batch("INSERT INTO task_queue (task_id,state,resource) VALUES ('a','queued','a'),('b','queued','b'),('c','queued','c'),('d','queued','d')").unwrap();
     drop(db);
     let request: ToolRequest = serde_json::from_value(serde_json::json!({"tool":"inert","action":"echo","resource":"task/item","data_class":"public","arguments":{"text":"hello"}})).unwrap();
     let mut store = SqliteStore::open(&dir).unwrap();
@@ -121,12 +121,26 @@ fn owner_wait_pause_resume_cancel_survive_restart() {
         .queue_wait("a", 1, "approval", Some(&request))
         .unwrap();
     store.queue_wait("b", 1, "event", None).unwrap();
+    store.queue_wait("c", 1, "wrong", Some(&request)).unwrap();
+    store.queue_wait("d", 1, "event", None).unwrap();
+    let wrong: ToolRequest = serde_json::from_value(serde_json::json!({"tool":"inert","action":"echo","resource":"task/item","data_class":"public","arguments":{"text":"different"}})).unwrap();
+    store
+        .issue_tool_approval(
+            "wrong",
+            "c",
+            1,
+            &wrong,
+            SystemTime::now() + Duration::from_secs(60),
+        )
+        .unwrap();
+    assert!(store.queue_signal("c", 1, "wrong").is_err());
     assert!(store.queue_signal("a", 1, "approval").is_err());
     assert!(store.queue_signal("b", 1, "other").is_err());
     assert!(store.queue_signal("b", 2, "event").is_err());
     store.queue_pause("a", 1, "checkpoint").unwrap();
     drop(store);
     let mut store = SqliteStore::open(&dir).unwrap();
+    store.queue_signal("d", 1, "event").unwrap();
     assert!(store.queue_signal("a", 1, "approval").is_err());
     store.queue_resume("a", 1).unwrap();
     store
