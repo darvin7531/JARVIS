@@ -665,7 +665,7 @@ fn observe(
     if cancelled.load(Ordering::Relaxed) {
         return Err("cancelled");
     }
-    let verified = read(&owner.read_approval)? == Some(value);
+    let verified = read(&owner.read_approval)?.as_deref() == Some(value.as_str());
     #[cfg(test)]
     OBSERVE_AFTER_VERIFY.with(|hook| {
         if let Some(barrier) = hook.borrow().as_ref() {
@@ -704,7 +704,19 @@ fn observe(
     if !verified {
         return Err("agent_verify");
     }
-    println!("{}", serde_json::json!({"status":status,"changes":0}));
+    let json = serde_json::json!({"status":status,"changes":0,"observed":value}).to_string();
+    let mut safe = String::new();
+    for c in json.chars() {
+        if c.is_ascii() && c != '\u{7f}' {
+            safe.push(c);
+        } else {
+            use std::fmt::Write;
+            for unit in c.encode_utf16(&mut [0; 2]) {
+                write!(safe, "\\u{unit:04x}").map_err(|_| "agent_output")?;
+            }
+        }
+    }
+    println!("{safe}");
     Ok(())
 }
 

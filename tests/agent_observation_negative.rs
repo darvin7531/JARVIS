@@ -174,15 +174,11 @@ fn observation_rejects_untrusted_or_changed_data_and_preserves_presence() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.success(), case == "empty", "{case}: {stderr}");
         if case == "empty" {
-            assert_eq!(
-                serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()["status"],
-                "verified"
-            );
+            let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(result["status"], "verified");
+            assert_eq!(result["observed"], "");
         } else {
-            assert!(
-                !String::from_utf8_lossy(&output.stdout).contains("verified"),
-                "{case}"
-            );
+            assert!(output.stdout.is_empty(), "{case}");
         }
         let should_infer = matches!(
             case,
