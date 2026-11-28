@@ -701,11 +701,25 @@ mod tests {
 
     #[test]
     fn cancellation_after_verification_read_stays_pending() {
+        observation_boundary("cancel");
+    }
+
+    #[test]
+    fn expiry_after_verification_read_stays_pending() {
+        observation_boundary("expire");
+    }
+
+    #[test]
+    fn checkpoint_failure_after_verification_stays_pending() {
+        observation_boundary("storage");
+    }
+
+    fn observation_boundary(boundary: &str) {
         use std::io::{Read, Write};
         use std::net::TcpListener;
         use std::time::Instant;
         let root =
-            std::env::temp_dir().join(format!("agent-observation-cancel-{}", std::process::id()));
+            std::env::temp_dir().join(format!("agent-observation-{boundary}-{}", std::process::id()));
         let mut store = SqliteStore::create(&root).unwrap();
         store
             .create_task(
@@ -808,16 +822,31 @@ mod tests {
         let barrier = Arc::new(std::sync::Barrier::new(2));
         let worker_cancelled = Arc::clone(&cancelled);
         let worker_barrier = Arc::clone(&barrier);
+        let observe_expiry = if boundary == "expire" {
+            SystemTime::now() + Duration::from_secs(5)
+        } else {
+            expiry
+        };
         let worker = std::thread::spawn(move || {
             OBSERVE_AFTER_VERIFY.with(|hook| *hook.borrow_mut() = Some(worker_barrier));
-            observe(&owner, &config, expiry, &worker_cancelled)
+            observe(&owner, &config, observe_expiry, &worker_cancelled)
         });
         barrier.wait();
-        cancelled.store(true, Ordering::Relaxed);
-        barrier.wait();
-        assert_eq!(worker.join().unwrap(), Err("cancelled"));
-        server.join().unwrap();
         let db = rusqlite::Connection::open(root.join("jarvis.sqlite3")).unwrap();
+        match boundary {
+            "cancel" => cancelled.store(true, Ordering::Relaxed),
+            "expire" => std::thread::sleep(observe_expiry.duration_since(SystemTime::now()).unwrap_or_default() + Duration::from_millis(50)),
+            "storage" => db.execute_batch("CREATE TRIGGER reject_result BEFORE INSERT ON events WHEN NEW.event LIKE '%verified%' BEGIN SELECT RAISE(ABORT, 'result failure'); END;").unwrap(),
+            _ => unreachable!(),
+        }
+        barrier.wait();
+        let expected = match boundary {
+            "cancel" => "cancelled",
+            "expire" => "agent_expired",
+            _ => "agent_storage",
+        };
+        assert_eq!(worker.join().unwrap(), Err(expected));
+        server.join().unwrap();
         let state: (i64, i64, i64, i64) = db.query_row("SELECT (SELECT pending FROM agent_runtime WHERE task_id='task'), (SELECT terminal FROM agent_runtime WHERE task_id='task'), (SELECT count(*) FROM tool_approvals WHERE consumed=1), (SELECT used FROM tool_budget)", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
         assert_eq!(state, (1, 0, 2, 2));
         drop(db);
