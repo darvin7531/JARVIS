@@ -499,6 +499,20 @@ fn run_owner_inner(
         println!("{}", serde_json::json!({"status":status,"changes":0}));
         return Ok(());
     }
+    #[cfg(test)]
+    DELETE_AFTER_WRITE.with(|flag| {
+        if flag.get() {
+            let db = rusqlite::Connection::open(owner.store.join("jarvis.sqlite3")).unwrap();
+            assert_eq!(
+                db.execute(
+                    "DELETE FROM mock_state WHERE resource = ?1 AND value = ''",
+                    [&owner.resource]
+                )
+                .unwrap(),
+                1
+            );
+        }
+    });
     // Independent broker read, with a separate owner-issued approval. The write
     // result is not used as verification and the store is reopened first.
     let read = ToolRequest {
@@ -700,6 +714,7 @@ thread_local! {
     static FAIL_OBSERVATION_RESULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FAIL_OUTCOME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FAIL_VERIFICATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static DELETE_AFTER_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[cfg(test)]
@@ -707,6 +722,95 @@ mod tests {
     use super::*;
     use jarvis::storage::Task;
     use serde_json::json;
+
+    #[test]
+    fn empty_write_verification_requires_present_row() {
+        for deleted in [false, true] {
+            let path = std::env::temp_dir().join(format!(
+                "agent-empty-write-{}-{deleted}",
+                std::process::id()
+            ));
+            let mut store = SqliteStore::create(&path).unwrap();
+            store
+                .create_task(
+                    &Task {
+                        id: "task".into(),
+                        version: 1,
+                        title: "test".into(),
+                    },
+                    "created",
+                    &[],
+                )
+                .unwrap();
+            store.initialize_tool_budget(2).unwrap();
+            let expires = SystemTime::now() + Duration::from_secs(300);
+            let request = |tool: &str| ToolRequest {
+                tool: tool.into(),
+                action: tool.into(),
+                resource: "mock/item".into(),
+                data_class: DataClass::Public,
+                arguments: json!({"text":""}),
+            };
+            store
+                .issue_tool_approval("write", "task", 1, &request("write"), expires)
+                .unwrap();
+            store
+                .issue_tool_approval("read", "task", 1, &request("read"), expires)
+                .unwrap();
+            drop(store);
+            let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
+            db.execute(
+                "INSERT INTO mock_state VALUES ('mock/other', 'untouched', 'sensitive')",
+                [],
+            )
+            .unwrap();
+            drop(db);
+            let owner = json!({"store":path, "task":"task", "revision":1, "approval":"write", "read_approval":"read", "resource":"mock/item", "data_class":"public", "permitted_text":"", "expected":"", "expires_unix":expires.duration_since(UNIX_EPOCH).unwrap().as_secs(), "mode":"write", "context":"test"});
+            let owner_path = path.join("owner.json");
+            let proposal_path = path.join("proposal.json");
+            std::fs::write(&owner_path, owner.to_string()).unwrap();
+            std::fs::write(
+                &proposal_path,
+                serde_json::to_string(&request("write")).unwrap(),
+            )
+            .unwrap();
+            DELETE_AFTER_WRITE.with(|flag| flag.set(deleted));
+            let result = run_owner(owner_path.as_os_str(), proposal_path.as_os_str());
+            DELETE_AFTER_WRITE.with(|flag| flag.set(false));
+            let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
+            let mut stmt = db
+                .prepare("SELECT resource, value, data_class FROM mock_state ORDER BY resource")
+                .unwrap();
+            let rows: Vec<(String, String, String)> = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            let mut expected = vec![("mock/other".into(), "untouched".into(), "sensitive".into())];
+            if !deleted {
+                expected.insert(0, ("mock/item".into(), "".into(), "public".into()));
+            }
+            assert_eq!(rows, expected);
+            let state: (i64, i64, i64, i64, i64) = db.query_row("SELECT (SELECT count(*) FROM tool_approvals WHERE consumed=1), (SELECT count(*) FROM tool_executions WHERE pending=0), (SELECT used FROM tool_budget), (SELECT pending FROM agent_runtime WHERE task_id='task'), (SELECT terminal FROM agent_runtime WHERE task_id='task')", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).unwrap();
+            assert_eq!(state, (2, 2, 2, 0, 1));
+            let events: Vec<String> = db
+                .prepare("SELECT event FROM events")
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            assert!(events.iter().any(|event| event.contains(if deleted {
+                "verification_failed"
+            } else {
+                "verified"
+            })));
+            assert_eq!(result, if deleted { Err("agent_verify") } else { Ok(()) });
+            drop(stmt);
+            drop(db);
+            std::fs::remove_dir_all(path).unwrap();
+        }
+    }
 
     #[test]
     fn cancellation_after_verification_read_stays_pending() {
