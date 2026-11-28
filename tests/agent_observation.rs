@@ -8,7 +8,34 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[test]
 fn unknown_observation_reaches_inference_and_is_independently_verified() {
-    let root = std::env::temp_dir().join(format!("agent-observation-{}", std::process::id()));
+    for (case, context, value, model) in [
+        (
+            "adversarial",
+            "Report the value",
+            "critical incident architecture",
+            "t1-model",
+        ),
+        (
+            "owner-heavy",
+            "Investigate a critical incident",
+            "ordinary value",
+            "t3-model",
+        ),
+        (
+            "owner-code",
+            "code: report the value",
+            "architecture",
+            "t2-model",
+        ),
+        ("ping", "ping", "critical", "t1-model"),
+    ] {
+        check_observation(case, context, value, model);
+    }
+}
+
+fn check_observation(case: &str, context: &str, value: &str, model: &str) {
+    let root =
+        std::env::temp_dir().join(format!("agent-observation-{}-{case}", std::process::id()));
     let mut store = SqliteStore::create(&root).unwrap();
     store
         .create_task(
@@ -38,11 +65,16 @@ fn unknown_observation_reaches_inference_and_is_independently_verified() {
         .unwrap();
     drop(store);
     let db = rusqlite::Connection::open(root.join("jarvis.sqlite3")).unwrap();
-    db.execute("INSERT INTO mock_state(resource, value, data_class) VALUES ('mock/item', 'unknown seeded value', 'public')", []).unwrap();
+    db.execute(
+        "INSERT INTO mock_state(resource, value, data_class) VALUES ('mock/item', ?1, 'public')",
+        [value],
+    )
+    .unwrap();
     drop(db);
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let port = listener.local_addr().unwrap().port();
+    let value_owned = value.to_owned();
     let server = std::thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut stream = loop {
@@ -82,7 +114,7 @@ fn unknown_observation_reaches_inference_and_is_independently_verified() {
                 }
             }
         }
-        let claim = json!({"kind":"claim", "value":"unknown seeded value"}).to_string();
+        let claim = json!({"kind":"claim", "value":value_owned}).to_string();
         let body = format!(
             "{}\n{}\n",
             json!({"response":claim,"done":false}),
@@ -97,8 +129,8 @@ fn unknown_observation_reaches_inference_and_is_independently_verified() {
         .unwrap();
         Some(String::from_utf8(request).unwrap())
     });
-    let owner = json!({"store":root,"task":"task","revision":1,"approval":"first","read_approval":"verify","resource":"mock/item","data_class":"public","permitted_text":"","expected":"","expires_unix":expiry.duration_since(UNIX_EPOCH).unwrap().as_secs(),"mode":"observe","context":"Report the observed value as a claim."});
-    let config = json!({"models":[{"name":"model","tier":"t1","capabilities":["text"],"allowed_data":["public"],"trusted_no_truncation":true,"port":port}],"limits":{"max_tokens":100},"budget":{"workspace":root,"limit_tokens":1000,"max_input_tokens":512}});
+    let owner = json!({"store":root,"task":"task","revision":1,"approval":"first","read_approval":"verify","resource":"mock/item","data_class":"public","permitted_text":"","expected":"","expires_unix":expiry.duration_since(UNIX_EPOCH).unwrap().as_secs(),"mode":"observe","context":context});
+    let config = json!({"models":[{"name":"t1-model","tier":"t1","capabilities":["text"],"allowed_data":["public"],"trusted_no_truncation":true,"port":port},{"name":"t2-model","tier":"t2","capabilities":["text"],"allowed_data":["public"],"trusted_no_truncation":true,"port":port},{"name":"t3-model","tier":"t3","capabilities":["text"],"allowed_data":["public"],"trusted_no_truncation":true,"port":port}],"limits":{"max_tokens":100},"budget":{"workspace":root,"limit_tokens":1000,"max_input_tokens":512}});
     let owner_path = root.join("owner.json");
     let config_path = root.join("config.json");
     std::fs::write(&owner_path, owner.to_string()).unwrap();
@@ -116,7 +148,11 @@ fn unknown_observation_reaches_inference_and_is_independently_verified() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(prompt.unwrap().contains("unknown seeded value"));
+    let request = prompt.unwrap();
+    let body = request.split_once("\r\n\r\n").unwrap().1;
+    let body: serde_json::Value = serde_json::from_str(body).unwrap();
+    assert_eq!(body["model"], model, "{case}");
+    assert!(body["prompt"].as_str().unwrap().contains(value));
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()["status"],
         "verified"

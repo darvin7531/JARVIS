@@ -298,16 +298,22 @@ pub fn agent_config(path: &std::ffi::OsStr) -> Result<Config, &'static str> {
 pub fn agent_inference(
     config: &Config,
     prompt: &str,
+    objective: &str,
     class: DataClass,
     cancelled: &Arc<AtomicBool>,
     expires: SystemTime,
 ) -> Result<String, (&'static str, bool)> {
+    // T0 is reserved for the exact standalone ping, not agent prompts.
+    let tier = match jarvis::inference::classify(objective) {
+        Tier::T0 => Tier::T1,
+        tier => tier,
+    };
     let mut output = String::new();
     let mut dispatched = false;
     configured_inference(
         config,
         prompt,
-        None,
+        Some(tier),
         None,
         Capability::Text,
         class,
