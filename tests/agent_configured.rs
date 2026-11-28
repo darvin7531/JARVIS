@@ -80,8 +80,25 @@ fn configured_proposals_require_complete_stream_and_exact_approval() {
         let proposal = json!({"kind":"tool", "request":request("write", proposed)}).to_string();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
+            let mut bytes = Vec::new();
             let mut buf = [0; 4096];
-            assert!(stream.read(&mut buf).unwrap() > 0);
+            loop {
+                let n = stream.read(&mut buf).unwrap();
+                assert!(n > 0);
+                bytes.extend_from_slice(&buf[..n]);
+                if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&bytes[..end]);
+                    let length: usize = headers.lines().find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length").then(|| value.trim().parse().unwrap())
+                    }).unwrap();
+                    if bytes.len() >= end + 4 + length {
+                        let payload: serde_json::Value = serde_json::from_slice(&bytes[end + 4..end + 4 + length]).unwrap();
+                        assert!(payload["format"].is_object(), "agent must request a proposal schema");
+                        break;
+                    }
+                }
+            }
             let body = format!(
                 "{}\n{}\n",
                 json!({"response":proposal,"done":false}),
