@@ -39,7 +39,11 @@ fn unknown_observation_reaches_inference_and_is_independently_verified() {
     drop(store);
     let value = "unknown\n\u{1b}[31m\u{7f}\u{202e}value😀";
     let db = rusqlite::Connection::open(root.join("jarvis.sqlite3")).unwrap();
-    db.execute("INSERT INTO mock_state(resource, value, data_class) VALUES ('mock/item', ?1, 'public')", [value]).unwrap();
+    db.execute(
+        "INSERT INTO mock_state(resource, value, data_class) VALUES ('mock/item', ?1, 'public')",
+        [value],
+    )
+    .unwrap();
     drop(db);
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
