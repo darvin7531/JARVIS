@@ -55,6 +55,23 @@ impl From<rusqlite::Error> for StorageError {
     }
 }
 
+#[cfg(test)]
+#[test]
+fn sqlite_contention_is_distinct_and_sanitized() {
+    for code in [rusqlite::ffi::SQLITE_BUSY, rusqlite::ffi::SQLITE_LOCKED] {
+        let error = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(code),
+            Some("secret".into()),
+        );
+        assert_eq!(StorageError::from(error).to_string(), "storage busy");
+    }
+    let error = rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_IOERR),
+        Some("secret".into()),
+    );
+    assert_eq!(StorageError::from(error).to_string(), "storage operation failed");
+}
+
 fn validate_schema(db: &Connection, version: i64) -> Result<(), StorageError> {
     let expected = Connection::open_in_memory()?;
     expected.execute_batch("CREATE TABLE tasks (id TEXT PRIMARY KEY, version INTEGER NOT NULL, title TEXT NOT NULL); CREATE TABLE events (id INTEGER PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), event TEXT NOT NULL); CREATE TABLE evidence (task_id TEXT NOT NULL REFERENCES tasks(id), reference TEXT NOT NULL);")?;
