@@ -324,7 +324,14 @@ fn run_owner_inner(
                 DataClass::Public => jarvis::inference::DataClass::Public,
                 DataClass::Sensitive => jarvis::inference::DataClass::Sensitive,
             };
-            match crate::chat::agent_inference(config, &prompt, class, &cancelled, expires) {
+            match crate::chat::agent_inference(
+                config,
+                &prompt,
+                &owner.context,
+                class,
+                &cancelled,
+                expires,
+            ) {
                 Ok(output) => output,
                 Err((error, dispatched)) => {
                     if !dispatched {
@@ -650,8 +657,9 @@ fn observe(
         DataClass::Public => jarvis::inference::DataClass::Public,
         DataClass::Sensitive => jarvis::inference::DataClass::Sensitive,
     };
-    let output = crate::chat::agent_inference(config, &prompt, class, cancelled, expires)
-        .map_err(|(error, _)| error)?;
+    let output =
+        crate::chat::agent_inference(config, &prompt, &owner.context, class, cancelled, expires)
+            .map_err(|(error, _)| error)?;
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Claim {
