@@ -325,10 +325,14 @@ impl SqliteStore {
         revision: i64,
         request: &crate::tool_policy::ToolRequest,
         contract_expires: std::time::SystemTime,
+        cancelled: &std::sync::atomic::AtomicBool,
     ) -> Result<Option<bool>, StorageError> {
         let tx = self
             .db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(Some(false));
+        }
         let pending: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM tool_executions WHERE pending = 1)",
             [],
@@ -382,6 +386,9 @@ impl SqliteStore {
             "INSERT INTO events (task_id, event, revision, occurred_at) VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
             params![task, event, revision],
         )?;
+        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(Some(false));
+        }
         tx.commit()?;
         Ok(Some(true))
     }
@@ -963,30 +970,71 @@ mod backup_tests {
 
     #[test]
     fn cancellation_while_waiting_for_approval_lock_rolls_back() {
-        use crate::tool_policy::{Broker, BrokerError, DataClass, Scope, TaskContract, ToolRequest};
-        use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+        use crate::tool_policy::{
+            Broker, BrokerError, DataClass, Scope, TaskContract, ToolRequest,
+        };
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
         use std::time::{Instant, SystemTime};
         static BLOCKED: AtomicBool = AtomicBool::new(false);
         let root = std::env::temp_dir().join(format!("jarvis-cancel-lock-{}", std::process::id()));
         let mut store = SqliteStore::create(&root).unwrap();
-        store.create_task(&Task { id: "task".into(), version: 1, title: "test".into() }, "created", &[]).unwrap();
+        store
+            .create_task(
+                &Task {
+                    id: "task".into(),
+                    version: 1,
+                    title: "test".into(),
+                },
+                "created",
+                &[],
+            )
+            .unwrap();
         store.initialize_tool_budget(1).unwrap();
         let request: ToolRequest = serde_json::from_value(serde_json::json!({"tool":"inert", "action":"echo", "resource":"task/item", "data_class":"public", "arguments":{"text":"hello"}})).unwrap();
         let expires = SystemTime::now() + Duration::from_secs(60);
-        store.issue_tool_approval("one", "task", 1, &request, expires).unwrap();
-        let contract = TaskContract { scopes: vec![Scope::Read], tool: "inert".into(), action: "echo".into(), resource: "task/item".into(), denied_resources: vec![], data_class: DataClass::Public, permitted_text: "hello".into(), expires_at: expires };
+        store
+            .issue_tool_approval("one", "task", 1, &request, expires)
+            .unwrap();
+        let contract = TaskContract {
+            scopes: vec![Scope::Read],
+            tool: "inert".into(),
+            action: "echo".into(),
+            resource: "task/item".into(),
+            denied_resources: vec![],
+            data_class: DataClass::Public,
+            permitted_text: "hello".into(),
+            expires_at: expires,
+        };
         let lock = Connection::open(root.join("jarvis.sqlite3")).unwrap();
         lock.execute_batch("BEGIN EXCLUSIVE").unwrap();
-        store.db.busy_handler(Some(|_| { BLOCKED.store(true, Ordering::SeqCst); std::thread::sleep(Duration::from_millis(1)); true })).unwrap();
+        store
+            .db
+            .busy_handler(Some(|_| {
+                BLOCKED.store(true, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(1));
+                true
+            }))
+            .unwrap();
         let cancelled = Arc::new(AtomicBool::new(false));
         let worker_cancelled = Arc::clone(&cancelled);
         let worker = std::thread::spawn(move || {
             let mut broker = Broker::with_approval(contract, store, "one".into(), "task".into(), 1);
-            (broker.call_cancellable(&request, &worker_cancelled), broker.executions())
+            (
+                broker.call_cancellable(&request, &worker_cancelled),
+                broker.executions(),
+            )
         });
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !BLOCKED.load(Ordering::SeqCst) && Instant::now() < deadline { std::thread::sleep(Duration::from_millis(1)); }
-        assert!(BLOCKED.load(Ordering::SeqCst), "broker never waited for lock");
+        while !BLOCKED.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            BLOCKED.load(Ordering::SeqCst),
+            "broker never waited for lock"
+        );
         cancelled.store(true, Ordering::SeqCst);
         lock.execute_batch("COMMIT").unwrap();
         assert_eq!(worker.join().unwrap(), (Err(BrokerError::Cancelled), 0));
