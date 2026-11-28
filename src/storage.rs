@@ -962,6 +962,43 @@ mod backup_tests {
     use std::{sync::mpsc, time::Duration};
 
     #[test]
+    fn cancellation_while_waiting_for_approval_lock_rolls_back() {
+        use crate::tool_policy::{Broker, BrokerError, DataClass, Scope, TaskContract, ToolRequest};
+        use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+        use std::time::{Instant, SystemTime};
+        static BLOCKED: AtomicBool = AtomicBool::new(false);
+        let root = std::env::temp_dir().join(format!("jarvis-cancel-lock-{}", std::process::id()));
+        let mut store = SqliteStore::create(&root).unwrap();
+        store.create_task(&Task { id: "task".into(), version: 1, title: "test".into() }, "created", &[]).unwrap();
+        store.initialize_tool_budget(1).unwrap();
+        let request: ToolRequest = serde_json::from_value(serde_json::json!({"tool":"inert", "action":"echo", "resource":"task/item", "data_class":"public", "arguments":{"text":"hello"}})).unwrap();
+        let expires = SystemTime::now() + Duration::from_secs(60);
+        store.issue_tool_approval("one", "task", 1, &request, expires).unwrap();
+        let contract = TaskContract { scopes: vec![Scope::Read], tool: "inert".into(), action: "echo".into(), resource: "task/item".into(), denied_resources: vec![], data_class: DataClass::Public, permitted_text: "hello".into(), expires_at: expires };
+        let lock = Connection::open(root.join("jarvis.sqlite3")).unwrap();
+        lock.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        store.db.busy_handler(Some(|_| { BLOCKED.store(true, Ordering::SeqCst); std::thread::sleep(Duration::from_millis(1)); true })).unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = Arc::clone(&cancelled);
+        let worker = std::thread::spawn(move || {
+            let mut broker = Broker::with_approval(contract, store, "one".into(), "task".into(), 1);
+            (broker.call_cancellable(&request, &worker_cancelled), broker.executions())
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !BLOCKED.load(Ordering::SeqCst) && Instant::now() < deadline { std::thread::sleep(Duration::from_millis(1)); }
+        assert!(BLOCKED.load(Ordering::SeqCst), "broker never waited for lock");
+        cancelled.store(true, Ordering::SeqCst);
+        lock.execute_batch("COMMIT").unwrap();
+        assert_eq!(worker.join().unwrap(), (Err(BrokerError::Cancelled), 0));
+        drop(lock);
+        let db = Connection::open(root.join("jarvis.sqlite3")).unwrap();
+        let state: (i64, i64, i64, i64) = db.query_row("SELECT (SELECT consumed FROM tool_approvals WHERE id = 'one'), (SELECT used FROM tool_budget), (SELECT count(*) FROM tool_executions), (SELECT count(*) FROM events WHERE event LIKE '%tool_execution_intent%')", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
+        assert_eq!(state, (0, 0, 0, 0));
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn broker_denies_approval_expired_while_waiting_for_lock() {
         use crate::tool_policy::{
             Broker, BrokerError, DataClass, Scope, TaskContract, ToolRequest,
