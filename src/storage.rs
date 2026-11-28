@@ -142,6 +142,9 @@ fn validate_schema(db: &Connection, version: i64) -> Result<(), StorageError> {
     if version >= 17 {
         expected.execute_batch("ALTER TABLE task_queue ADD COLUMN claim_budget_id INTEGER;")?;
     }
+    if version >= 18 {
+        expected.execute_batch("ALTER TABLE task_queue ADD COLUMN claim_generation INTEGER NOT NULL DEFAULT 0; ALTER TABLE task_queue ADD COLUMN claim_token BLOB;")?;
+    }
     fn definitions(db: &Connection) -> Result<Vec<(String, String)>, StorageError> {
         let mut query = db.prepare(
             "SELECT name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name",
@@ -163,8 +166,37 @@ fn validate_schema(db: &Connection, version: i64) -> Result<(), StorageError> {
     Ok(())
 }
 
+pub struct WorkerClaim {
+    task: String,
+    generation: i64,
+    token: Vec<u8>,
+}
+
 pub struct SqliteStore {
     db: Connection,
+}
+
+fn claim_authorized(
+    db: &Connection,
+    task: &str,
+    revision: i64,
+    claim: Option<&WorkerClaim>,
+) -> Result<bool, StorageError> {
+    let queued: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM task_queue WHERE task_id = ?1)",
+        [task],
+        |r| r.get(0),
+    )?;
+    if !queued {
+        return Ok(claim.is_none());
+    }
+    let Some(claim) = claim else {
+        return Ok(false);
+    };
+    if claim.task != task {
+        return Ok(false);
+    }
+    Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM task_queue q JOIN task_resource_locks l ON l.task_id=q.task_id AND l.resource=q.resource WHERE q.task_id=?1 AND q.state='running' AND q.revision=?2 AND q.claim_generation=?3 AND q.claim_token=?4)", params![task, revision, claim.generation, claim.token], |r| r.get(0))?)
 }
 
 fn mock_class(class: crate::tool_policy::DataClass) -> &'static str {
@@ -188,18 +220,36 @@ impl SqliteStore {
     /// Claim atomically; unresolved inference has no task identity, so blocks
     /// the entire workspace until its usage is reconciled.
     pub fn claim_task(&mut self, task: &str) -> Result<bool, StorageError> {
+        Ok(self.claim_task_identity(task)?.is_some())
+    }
+
+    pub fn claim_task_identity(&mut self, task: &str) -> Result<Option<WorkerClaim>, StorageError> {
         let tx = self
             .db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let changed = tx.execute("INSERT OR IGNORE INTO task_resource_locks (resource, task_id) SELECT resource, task_id FROM task_queue WHERE task_id = ?1 AND state = 'queued' AND (revision IS NULL OR revision = (SELECT version FROM tasks WHERE id = ?1)) AND NOT EXISTS (SELECT 1 FROM inference_budget WHERE pending = 1) AND NOT EXISTS (SELECT 1 FROM tool_executions WHERE pending = 1) AND NOT EXISTS (SELECT 1 FROM agent_runtime WHERE closed = 0 OR task_id = ?1) AND NOT EXISTS (SELECT 1 FROM tool_approvals a JOIN tool_executions e ON e.approval_id = a.id WHERE a.task_id = ?1)", [task])?;
         if changed == 1 {
             tx.execute(
-                "UPDATE task_queue SET state = 'running', revision = (SELECT version FROM tasks WHERE id = ?1), claim_budget_id = (SELECT coalesce(max(id), 0) FROM inference_budget WHERE id > 0) WHERE task_id = ?1",
+                "UPDATE task_queue SET state = 'running', claim_generation = claim_generation + 1, claim_token = randomblob(32), revision = (SELECT version FROM tasks WHERE id = ?1), claim_budget_id = (SELECT coalesce(max(id), 0) FROM inference_budget WHERE id > 0) WHERE task_id = ?1",
                 [task],
             )?;
         }
+        let claim = if changed == 1 {
+            let (generation, token) = tx.query_row(
+                "SELECT claim_generation, claim_token FROM task_queue WHERE task_id = ?1",
+                [task],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            Some(WorkerClaim {
+                task: task.to_owned(),
+                generation,
+                token,
+            })
+        } else {
+            None
+        };
         tx.commit()?;
-        Ok(changed == 1)
+        Ok(claim)
     }
 
     /// Trusted owner only, after stopping every worker. Safe unstarted claims
@@ -292,7 +342,7 @@ impl SqliteStore {
         db.execute_batch("PRAGMA foreign_keys = ON;")?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if !(0..=17).contains(&version) {
+        if !(0..=18).contains(&version) {
             return Err(StorageError::UnsupportedSchema);
         }
         if version > 0 {
@@ -368,6 +418,9 @@ impl SqliteStore {
         }
         if version < 17 {
             tx.execute_batch("ALTER TABLE task_queue ADD COLUMN claim_budget_id INTEGER; PRAGMA user_version = 17;")?;
+        }
+        if version < 18 {
+            tx.execute_batch("ALTER TABLE task_queue ADD COLUMN claim_generation INTEGER NOT NULL DEFAULT 0; ALTER TABLE task_queue ADD COLUMN claim_token BLOB; PRAGMA user_version = 18;")?;
         }
         tx.commit()?;
         Ok(Self { db })
@@ -539,6 +592,7 @@ impl SqliteStore {
         revision: i64,
         request: &crate::tool_policy::ToolRequest,
         contract_expires: std::time::SystemTime,
+        claim: Option<&WorkerClaim>,
         cancelled: &std::sync::atomic::AtomicBool,
     ) -> Result<Option<bool>, StorageError> {
         let tx = self
@@ -554,6 +608,9 @@ impl SqliteStore {
         )?;
         if pending {
             return Ok(None);
+        }
+        if !claim_authorized(&tx, task, revision, claim)? {
+            return Ok(Some(false));
         }
         let conflict: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM task_resource_locks WHERE resource = ?1 AND task_id != ?2) OR EXISTS(SELECT 1 FROM task_queue WHERE task_id = ?2 AND (state != 'running' OR revision IS NOT ?3 OR resource != ?1 OR NOT EXISTS (SELECT 1 FROM task_resource_locks WHERE task_id = ?2 AND resource = ?1)))", params![request.resource, task, revision], |row| row.get(0))?;
         if conflict {
@@ -938,6 +995,17 @@ impl SqliteStore {
         steps: u32,
         failures: u32,
     ) -> Result<bool, StorageError> {
+        self.agent_step_with_claim(task, revision, steps, failures, None)
+    }
+
+    pub fn agent_step_with_claim(
+        &mut self,
+        task: &str,
+        revision: i64,
+        steps: u32,
+        failures: u32,
+        claim: Option<&WorkerClaim>,
+    ) -> Result<bool, StorageError> {
         let tx = self
             .db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -947,6 +1015,9 @@ impl SqliteStore {
             |row| row.get(0),
         )?;
         if restored {
+            return Ok(false);
+        }
+        if !claim_authorized(&tx, task, revision, claim)? {
             return Ok(false);
         }
         let unclaimed: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM task_queue q WHERE q.task_id = ?1 AND (q.state != 'running' OR q.revision IS NOT ?2 OR NOT EXISTS (SELECT 1 FROM task_resource_locks l WHERE l.task_id = q.task_id AND l.resource = q.resource)))", params![task, revision], |row| row.get(0))?;

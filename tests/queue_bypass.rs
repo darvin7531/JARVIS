@@ -54,15 +54,90 @@ fn direct_broker_cannot_use_another_workers_claim() {
 
 #[test]
 fn direct_agent_cannot_use_reclaimed_workers_claim() {
-    let path = std::env::temp_dir().join(format!("jarvis-queue-agent-bypass-{}", std::process::id()));
+    let path =
+        std::env::temp_dir().join(format!("jarvis-queue-agent-bypass-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&path);
     let mut store = SqliteStore::create(&path).unwrap();
-    store.create_task(&Task { id: "task".into(), version: 1, title: "task".into() }, "created", &[]).unwrap();
+    store
+        .create_task(
+            &Task {
+                id: "task".into(),
+                version: 1,
+                title: "task".into(),
+            },
+            "created",
+            &[],
+        )
+        .unwrap();
     store.enqueue_task("task", "mock/item").unwrap();
     assert!(store.claim_task("task").unwrap());
     assert!(store.recover_task("task").unwrap());
     assert!(store.claim_task("task").unwrap());
     assert!(!store.agent_step("task", 1, 2, 2).unwrap());
     drop(store);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn claim_generation_authorizes_only_current_worker() {
+    let path = std::env::temp_dir().join(format!("jarvis-queue-identity-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&path);
+    let mut store = SqliteStore::create(&path).unwrap();
+    store
+        .create_task(
+            &Task {
+                id: "task".into(),
+                version: 1,
+                title: "task".into(),
+            },
+            "created",
+            &[],
+        )
+        .unwrap();
+    store.initialize_tool_budget(1).unwrap();
+    let request: ToolRequest = serde_json::from_value(serde_json::json!({"tool":"write", "action":"write", "resource":"mock/item", "data_class":"public", "arguments":{"text":"changed"}})).unwrap();
+    let expires = SystemTime::now() + Duration::from_secs(600);
+    store
+        .issue_tool_approval("approval", "task", 1, &request, expires)
+        .unwrap();
+    store.enqueue_task("task", "mock/item").unwrap();
+    let old = store.claim_task_identity("task").unwrap().unwrap();
+    assert!(store.recover_task("task").unwrap());
+    let current = store.claim_task_identity("task").unwrap().unwrap();
+    assert!(!store
+        .agent_step_with_claim("task", 1, 2, 2, Some(&old))
+        .unwrap());
+    let contract = || TaskContract {
+        scopes: vec![Scope::Write],
+        tool: "write".into(),
+        action: "write".into(),
+        resource: "mock/item".into(),
+        denied_resources: vec![],
+        data_class: DataClass::Public,
+        permitted_text: "changed".into(),
+        expires_at: expires,
+    };
+    let mut stale = Broker::with_approval(contract(), store, "approval".into(), "task".into(), 1)
+        .with_claim(old);
+    assert_eq!(stale.call(&request), Err(BrokerError::Denied));
+    drop(stale);
+    let mut store = SqliteStore::open(&path).unwrap();
+    assert!(store
+        .agent_step_with_claim("task", 1, 2, 2, Some(&current))
+        .unwrap());
+    let mut broker = Broker::with_approval(contract(), store, "approval".into(), "task".into(), 1)
+        .with_claim(current);
+    assert_eq!(broker.call(&request).unwrap(), "changed");
+    drop(broker);
+    let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
+    let value: String = db
+        .query_row(
+            "SELECT value FROM mock_state WHERE resource='mock/item'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(value, "changed");
+    drop(db);
     std::fs::remove_dir_all(path).unwrap();
 }
