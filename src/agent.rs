@@ -663,6 +663,14 @@ fn observe(
         return Err("cancelled");
     }
     let mut store = SqliteStore::open(&owner.store).map_err(|_| "agent_storage")?;
+    #[cfg(test)]
+    let _result_fault = if FAIL_OBSERVATION_RESULT.with(|flag| flag.get()) {
+        let db = rusqlite::Connection::open(owner.store.join("jarvis.sqlite3")).unwrap();
+        db.execute_batch("CREATE TRIGGER reject_result BEFORE INSERT ON events WHEN NEW.event LIKE '%verified%' BEGIN SELECT RAISE(ABORT, 'result failure'); END;").unwrap();
+        Some(db)
+    } else {
+        None
+    };
     // Terminal is durable before reporting: failure to write the checkpoint cannot replay.
     store
         .finish_agent_step(&owner.task, owner.revision, !verified, true)
@@ -689,6 +697,7 @@ fn observe(
 #[cfg(test)]
 thread_local! {
     static OBSERVE_AFTER_VERIFY: std::cell::RefCell<Option<Arc<std::sync::Barrier>>> = const { std::cell::RefCell::new(None) };
+    static FAIL_OBSERVATION_RESULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FAIL_OUTCOME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FAIL_VERIFICATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -827,7 +836,9 @@ mod tests {
         } else {
             expiry
         };
+        let fail_result = boundary == "storage";
         let worker = std::thread::spawn(move || {
+            FAIL_OBSERVATION_RESULT.with(|flag| flag.set(fail_result));
             OBSERVE_AFTER_VERIFY.with(|hook| *hook.borrow_mut() = Some(worker_barrier));
             observe(&owner, &config, observe_expiry, &worker_cancelled)
         });
@@ -836,7 +847,7 @@ mod tests {
         match boundary {
             "cancel" => cancelled.store(true, Ordering::Relaxed),
             "expire" => std::thread::sleep(observe_expiry.duration_since(SystemTime::now()).unwrap_or_default() + Duration::from_millis(50)),
-            "storage" => db.execute_batch("CREATE TRIGGER reject_result BEFORE INSERT ON events WHEN NEW.event LIKE '%verified%' BEGIN SELECT RAISE(ABORT, 'result failure'); END;").unwrap(),
+            "storage" => (),
             _ => unreachable!(),
         }
         barrier.wait();
