@@ -495,6 +495,9 @@ fn run_owner_inner(
                 }
             }
         });
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("cancelled");
+        }
         let status = if verified {
             "verified"
         } else {
@@ -574,6 +577,9 @@ fn run_owner_inner(
             }
         }
     });
+    if observed.is_ok() && cancelled.load(Ordering::Relaxed) {
+        return Err("cancelled");
+    }
     let status = match observed {
         Ok(Some(value)) if value == owner.expected => "verified",
         Ok(_) => "verification_failed",
@@ -845,7 +851,7 @@ mod tests {
             );
             drop(db);
             let mut store = SqliteStore::open(&path).unwrap();
-            assert!(!store.agent_step("task", 1, 1, 1).unwrap());
+            assert!(!store.agent_step("task", 1, 32, 32).unwrap());
             store
                 .reconcile_agent_runtime(
                     "task",
