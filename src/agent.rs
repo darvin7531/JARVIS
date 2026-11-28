@@ -1316,7 +1316,7 @@ mod tests {
         let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
         let state: (String, i64, i64, i64, i64, i64, i64, i64, i64) = db.query_row("SELECT (SELECT value FROM mock_state WHERE resource='mock/item'), (SELECT consumed FROM tool_approvals WHERE id='write'), (SELECT consumed FROM tool_approvals WHERE id='read'), (SELECT used FROM tool_budget), (SELECT count(*) FROM tool_executions), (SELECT pending FROM tool_executions WHERE approval_id='write'), (SELECT pending FROM agent_runtime WHERE task_id='task'), (SELECT terminal FROM agent_runtime WHERE task_id='task'), (SELECT failures FROM agent_runtime WHERE task_id='task')", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?))).unwrap();
         assert_eq!(state, ("original".into(), 1, 0, 1, 1, 1, 1, 0, 0));
-        let outcomes: i64 = db.query_row("SELECT count(*) FROM events WHERE event LIKE '%tool_execution_outcome%' OR event LIKE '%checkpoint%'", [], |r| r.get(0)).unwrap();
+        let outcomes: i64 = db.query_row("SELECT count(*) FROM events WHERE event LIKE '%tool_execution_outcome%' OR event LIKE '%denied_or_failed%' OR event LIKE '%verified%'", [], |r| r.get(0)).unwrap();
         assert_eq!(outcomes, 0);
         drop(db);
         std::fs::remove_dir_all(path).unwrap();
