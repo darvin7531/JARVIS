@@ -1,0 +1,72 @@
+name: Admission diagnostics
+on: [push]
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc
+        with:
+          toolchain: 1.89.0
+      - name: Instrument disposable checkout with fixed categories only
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('src/storage.rs')
+          source = path.read_text()
+          before = '''    fn from(_: rusqlite::Error) -> Self {
+                  Self::OperationFailed
+              }'''
+          after = '''    fn from(error: rusqlite::Error) -> Self {
+                  let category = match error {
+                      rusqlite::Error::SqliteFailure(code, _) => match code.code {
+                          rusqlite::ErrorCode::DatabaseBusy => "busy",
+                          rusqlite::ErrorCode::DatabaseLocked => "locked",
+                          _ => "sqlite-other",
+                      },
+                      _ => "non-sqlite",
+                  };
+                  eprintln!("admission-diagnostic: {}", category);
+                  Self::OperationFailed
+              }'''
+          assert source.count(before) == 1
+          source = source.replace(before, after)
+          source += '''
+          #[cfg(test)]
+          #[test]
+          fn diagnostic_redacts_sqlite_messages() {
+              for code in [5, 6, 1] {
+                  let error = rusqlite::Error::SqliteFailure(
+                      rusqlite::ffi::Error::new(code), Some("SECRET_DIAGNOSTIC_SENTINEL".into()));
+                  assert!(matches!(StorageError::from(error), StorageError::OperationFailed));
+              }
+              let error = rusqlite::Error::InvalidParameterName("SECRET_DIAGNOSTIC_SENTINEL".into());
+              assert!(matches!(StorageError::from(error), StorageError::OperationFailed));
+          }
+          '''
+          path.write_text(source)
+          PY
+      - name: Verify fixed categories and redaction
+        run: |
+          cargo test --locked --lib diagnostic_redacts_sqlite_messages -- --nocapture > diagnostic.log 2>&1 || { echo 'Diagnostic self-test failed'; exit 1; }
+          if grep -q SECRET_DIAGNOSTIC_SENTINEL diagnostic.log; then echo 'Redaction failed'; exit 1; fi
+          for category in busy locked sqlite-other non-sqlite; do
+            grep -Fx "admission-diagnostic: $category" diagnostic.log || exit 1
+          done
+      - name: Verify diagnostic and fail-closed lock behavior
+        run: |
+          cargo test --locked --test agent_owner admission_lock_timeout_fails_closed -- --exact --nocapture > diagnostic.log 2>&1 || { cat diagnostic.log; exit 1; }
+          grep -Fx 'admission-diagnostic: busy' diagnostic.log
+      - name: Repeat concurrent admission
+        run: |
+          for i in $(seq 1 200); do
+            if ! cargo test --locked --test agent_owner concurrent_admission_and_limit_changes_are_denied -- --exact --nocapture > diagnostic.log 2>&1; then
+              echo "Failed iteration $i"
+              cat diagnostic.log
+              exit 1
+            fi
+          done
+          echo '200 concurrent admission iterations passed'
