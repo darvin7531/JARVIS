@@ -9,8 +9,8 @@ use std::{
     io::Read,
     path::PathBuf,
     sync::{
-        Arc,
         atomic::{AtomicBool, Ordering},
+        Arc,
     },
     time::Instant,
 };
@@ -1299,11 +1299,9 @@ mod tests {
         assert!(run_owner(owner_path.as_os_str(), proposal_path.as_os_str()).is_err());
         let store = SqliteStore::open(&path).unwrap();
         let events = store.events("task").unwrap();
-        assert!(
-            !events
-                .iter()
-                .any(|e| e.contains("denied_or_failed") || e.contains("verified"))
-        );
+        assert!(!events
+            .iter()
+            .any(|e| e.contains("denied_or_failed") || e.contains("verified")));
         drop(store);
         std::fs::remove_dir_all(path).unwrap();
     }
