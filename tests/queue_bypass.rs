@@ -51,3 +51,18 @@ fn direct_broker_cannot_use_another_workers_claim() {
     drop(db);
     std::fs::remove_dir_all(path).unwrap();
 }
+
+#[test]
+fn direct_agent_cannot_use_reclaimed_workers_claim() {
+    let path = std::env::temp_dir().join(format!("jarvis-queue-agent-bypass-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&path);
+    let mut store = SqliteStore::create(&path).unwrap();
+    store.create_task(&Task { id: "task".into(), version: 1, title: "task".into() }, "created", &[]).unwrap();
+    store.enqueue_task("task", "mock/item").unwrap();
+    assert!(store.claim_task("task").unwrap());
+    assert!(store.recover_task("task").unwrap());
+    assert!(store.claim_task("task").unwrap());
+    assert!(!store.agent_step("task", 1, 2, 2).unwrap());
+    drop(store);
+    std::fs::remove_dir_all(path).unwrap();
+}
