@@ -142,6 +142,9 @@ fn validate_schema(db: &Connection, version: i64) -> Result<(), StorageError> {
     if version >= 17 {
         expected.execute_batch("ALTER TABLE task_queue ADD COLUMN claim_budget_id INTEGER;")?;
     }
+    if version >= 18 {
+        expected.execute_batch("ALTER TABLE task_queue ADD COLUMN deadline INTEGER; ALTER TABLE task_queue ADD COLUMN foreground INTEGER NOT NULL DEFAULT 0 CHECK(foreground IN (0, 1)); ALTER TABLE task_queue ADD COLUMN retry_limit INTEGER NOT NULL DEFAULT 3 CHECK(retry_limit >= 0 AND retry_limit <= 100); CREATE TABLE task_capacity (id INTEGER PRIMARY KEY CHECK(id = 1), max_running INTEGER NOT NULL CHECK(max_running BETWEEN 1 AND 1024));")?;
+    }
     fn definitions(db: &Connection) -> Result<Vec<(String, String)>, StorageError> {
         let mut query = db.prepare(
             "SELECT name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name",
@@ -185,13 +188,46 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Owner-controlled admission policy, only while the task is queued.
+    pub fn set_task_policy(
+        &mut self,
+        task: &str,
+        deadline_unix: Option<i64>,
+        foreground: bool,
+        retry_limit: i64,
+    ) -> Result<(), StorageError> {
+        if deadline_unix.is_some_and(|d| d <= 0) || !(0..=100).contains(&retry_limit) {
+            return Err(StorageError::OperationFailed);
+        }
+        let changed = self.db.execute("UPDATE task_queue SET deadline=?2, foreground=?3, retry_limit=?4 WHERE task_id=?1 AND state='queued' AND NOT EXISTS (SELECT 1 FROM task_resource_locks WHERE task_id=?1)", params![task, deadline_unix, foreground, retry_limit])?;
+        if changed != 1 {
+            return Err(StorageError::OperationFailed);
+        }
+        Ok(())
+    }
+
+    /// Owner controls the shared workspace capacity; running claims are never revoked.
+    pub fn set_task_capacity(&mut self, capacity: i64) -> Result<(), StorageError> {
+        if !(1..=1024).contains(&capacity) {
+            return Err(StorageError::OperationFailed);
+        }
+        if self.db.execute(
+            "UPDATE task_capacity SET max_running=?1 WHERE id=1",
+            [capacity],
+        )? != 1
+        {
+            return Err(StorageError::OperationFailed);
+        }
+        Ok(())
+    }
+
     /// Claim atomically; unresolved inference has no task identity, so blocks
     /// the entire workspace until its usage is reconciled.
     pub fn claim_task(&mut self, task: &str) -> Result<bool, StorageError> {
         let tx = self
             .db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let changed = tx.execute("INSERT OR IGNORE INTO task_resource_locks (resource, task_id) SELECT resource, task_id FROM task_queue WHERE task_id = ?1 AND state = 'queued' AND (revision IS NULL OR revision = (SELECT version FROM tasks WHERE id = ?1)) AND NOT EXISTS (SELECT 1 FROM inference_budget WHERE pending = 1) AND NOT EXISTS (SELECT 1 FROM tool_executions WHERE pending = 1) AND NOT EXISTS (SELECT 1 FROM agent_runtime WHERE closed = 0 OR task_id = ?1) AND NOT EXISTS (SELECT 1 FROM tool_approvals a JOIN tool_executions e ON e.approval_id = a.id WHERE a.task_id = ?1)", [task])?;
+        let changed = tx.execute("INSERT OR IGNORE INTO task_resource_locks (resource, task_id) SELECT resource, task_id FROM task_queue WHERE task_id = ?1 AND state = 'queued' AND (revision IS NULL OR revision = (SELECT version FROM tasks WHERE id = ?1)) AND (deadline IS NULL OR deadline > CAST(strftime('%s','now') AS INTEGER)) AND (SELECT count(*) FROM task_queue WHERE state='running') < (SELECT max_running FROM task_capacity WHERE id=1) AND (foreground=1 OR NOT EXISTS (SELECT 1 FROM task_queue f JOIN tasks t ON t.id=f.task_id WHERE f.state='queued' AND f.foreground=1 AND (f.deadline IS NULL OR f.deadline > CAST(strftime('%s','now') AS INTEGER)) AND (f.revision IS NULL OR f.revision=t.version) AND NOT EXISTS (SELECT 1 FROM task_resource_locks l WHERE l.resource=f.resource))) AND NOT EXISTS (SELECT 1 FROM inference_budget WHERE pending = 1) AND NOT EXISTS (SELECT 1 FROM tool_executions WHERE pending = 1) AND NOT EXISTS (SELECT 1 FROM agent_runtime WHERE closed = 0 OR task_id = ?1) AND NOT EXISTS (SELECT 1 FROM tool_approvals a JOIN tool_executions e ON e.approval_id = a.id WHERE a.task_id = ?1)", [task])?;
         if changed == 1 {
             tx.execute(
                 "UPDATE task_queue SET state = 'running', revision = (SELECT version FROM tasks WHERE id = ?1), claim_budget_id = (SELECT coalesce(max(id), 0) FROM inference_budget WHERE id > 0) WHERE task_id = ?1",
@@ -210,7 +246,7 @@ impl SqliteStore {
         let tx = self
             .db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let changed = tx.execute("UPDATE task_queue SET state = 'queued' WHERE task_id = ?1 AND state = 'running' AND EXISTS (SELECT 1 FROM task_resource_locks WHERE task_id = ?1 AND resource = task_queue.resource) AND claim_budget_id IS NOT NULL AND claim_budget_id = (SELECT coalesce(max(id), 0) FROM inference_budget WHERE id > 0) AND revision = (SELECT version FROM tasks WHERE id = ?1) AND NOT EXISTS (SELECT 1 FROM inference_budget WHERE pending = 1) AND NOT EXISTS (SELECT 1 FROM tool_executions WHERE pending = 1) AND NOT EXISTS (SELECT 1 FROM agent_runtime WHERE closed = 0 OR task_id = ?1) AND NOT EXISTS (SELECT 1 FROM tool_approvals a JOIN tool_executions e ON e.approval_id = a.id WHERE a.task_id = ?1) AND (SELECT count(*) FROM events WHERE task_id = ?1 AND event = 'task_pre_dispatch_retry') < 3", [task])?;
+        let changed = tx.execute("UPDATE task_queue SET state = 'queued' WHERE task_id = ?1 AND state = 'running' AND EXISTS (SELECT 1 FROM task_resource_locks WHERE task_id = ?1 AND resource = task_queue.resource) AND claim_budget_id IS NOT NULL AND claim_budget_id = (SELECT coalesce(max(id), 0) FROM inference_budget WHERE id > 0) AND revision = (SELECT version FROM tasks WHERE id = ?1) AND NOT EXISTS (SELECT 1 FROM inference_budget WHERE pending = 1) AND NOT EXISTS (SELECT 1 FROM tool_executions WHERE pending = 1) AND NOT EXISTS (SELECT 1 FROM agent_runtime WHERE closed = 0 OR task_id = ?1) AND NOT EXISTS (SELECT 1 FROM tool_approvals a JOIN tool_executions e ON e.approval_id = a.id WHERE a.task_id = ?1) AND (SELECT count(*) FROM events WHERE task_id = ?1 AND event = 'task_pre_dispatch_retry') < retry_limit AND (deadline IS NULL OR deadline > CAST(strftime('%s','now') AS INTEGER))", [task])?;
         if changed == 1 {
             tx.execute("INSERT INTO events (task_id, event, revision, occurred_at) SELECT id, 'task_pre_dispatch_retry', version, strftime('%Y-%m-%dT%H:%M:%fZ', 'now') FROM tasks WHERE id = ?1", [task])?;
             tx.execute("DELETE FROM task_resource_locks WHERE task_id = ?1", [task])?;
@@ -293,7 +329,7 @@ impl SqliteStore {
         db.execute_batch("PRAGMA foreign_keys = ON;")?;
         let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if !(0..=17).contains(&version) {
+        if !(0..=18).contains(&version) {
             return Err(StorageError::UnsupportedSchema);
         }
         if version > 0 {
@@ -369,6 +405,9 @@ impl SqliteStore {
         }
         if version < 17 {
             tx.execute_batch("ALTER TABLE task_queue ADD COLUMN claim_budget_id INTEGER; PRAGMA user_version = 17;")?;
+        }
+        if version < 18 {
+            tx.execute_batch("ALTER TABLE task_queue ADD COLUMN deadline INTEGER; ALTER TABLE task_queue ADD COLUMN foreground INTEGER NOT NULL DEFAULT 0 CHECK(foreground IN (0, 1)); ALTER TABLE task_queue ADD COLUMN retry_limit INTEGER NOT NULL DEFAULT 3 CHECK(retry_limit >= 0 AND retry_limit <= 100); CREATE TABLE task_capacity (id INTEGER PRIMARY KEY CHECK(id = 1), max_running INTEGER NOT NULL CHECK(max_running BETWEEN 1 AND 1024)); INSERT INTO task_capacity VALUES (1, 1); PRAGMA user_version = 18;")?;
         }
         tx.commit()?;
         Ok(Self { db })

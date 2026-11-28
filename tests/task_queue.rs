@@ -209,7 +209,7 @@ fn migration_preserves_existing_queue_and_locks() {
     let db = Connection::open(dir.join("jarvis.sqlite3")).unwrap();
     let row: (String,String) = db.query_row("SELECT q.state,l.resource FROM task_queue q JOIN task_resource_locks l ON q.task_id=l.task_id WHERE q.task_id='old'", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
     assert_eq!(row, ("running".into(), "res".into()));
-    db.execute_batch("ALTER TABLE task_queue DROP COLUMN claim_budget_id; PRAGMA user_version=16;")
+    db.execute_batch("DROP TABLE task_capacity; ALTER TABLE task_queue DROP COLUMN retry_limit; ALTER TABLE task_queue DROP COLUMN foreground; ALTER TABLE task_queue DROP COLUMN deadline; ALTER TABLE task_queue DROP COLUMN claim_budget_id; PRAGMA user_version=16;")
         .unwrap();
     drop(db);
     drop(SqliteStore::open(&dir).unwrap());
@@ -371,6 +371,92 @@ fn recovery_is_bounded_across_restart() {
     }
     assert!(store.claim_task("t").unwrap());
     assert!(!store.recover_task("t").unwrap());
+    drop(store);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn owner_admission_controls_survive_restart_and_contend_atomically() {
+    use std::sync::{Arc, Barrier};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let dir = std::env::temp_dir().join(format!("jarvis-owner-controls-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut store = SqliteStore::create(&dir).unwrap();
+    for id in ["background", "foreground", "expired", "one", "two"] {
+        store
+            .create_task(
+                &Task {
+                    id: id.into(),
+                    version: 1,
+                    title: id.into(),
+                },
+                "created",
+                &[],
+            )
+            .unwrap();
+        store.enqueue_task(id, id).unwrap();
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    store
+        .set_task_policy("foreground", Some(now + 3600), true, 1)
+        .unwrap();
+    store
+        .set_task_policy("expired", Some(now - 1), true, 0)
+        .unwrap();
+    assert!(store.set_task_capacity(0).is_err());
+    drop(store);
+    let mut store = SqliteStore::open(&dir).unwrap();
+    assert!(!store.claim_task("expired").unwrap());
+    assert!(!store.claim_task("background").unwrap());
+    assert!(store.claim_task("foreground").unwrap());
+    assert!(!store.claim_task("background").unwrap());
+    assert!(store.recover_task("foreground").unwrap());
+    assert!(store.claim_task("foreground").unwrap());
+    assert!(!store.recover_task("foreground").unwrap());
+    store
+        .close_recovered_task(
+            "foreground",
+            jarvis::storage::ReconciliationOutcome::NotExecuted,
+            "owner confirmed",
+        )
+        .unwrap();
+    store.queue_cancel("background", 1).unwrap();
+    drop(store);
+    let barrier = Arc::new(Barrier::new(3));
+    let handles: Vec<_> = ["one", "two"]
+        .into_iter()
+        .map(|id| {
+            let dir = dir.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                let mut store = SqliteStore::open(&dir).unwrap();
+                barrier.wait();
+                store.claim_task(id).unwrap()
+            })
+        })
+        .collect();
+    barrier.wait();
+    let wins = handles
+        .into_iter()
+        .map(|h| h.join().unwrap())
+        .filter(|won| *won)
+        .count();
+    assert_eq!(wins, 1);
+    let mut store = SqliteStore::open(&dir).unwrap();
+    store.set_task_capacity(2).unwrap();
+    let db = Connection::open(dir.join("jarvis.sqlite3")).unwrap();
+    let remaining: String = db
+        .query_row(
+            "SELECT task_id FROM task_queue WHERE task_id IN ('one','two') AND state='queued'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(store.claim_task(&remaining).unwrap());
+    drop(db);
     drop(store);
     std::fs::remove_dir_all(dir).unwrap();
 }
