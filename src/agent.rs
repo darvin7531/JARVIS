@@ -485,6 +485,14 @@ fn run_owner_inner(
         };
         let verified = matches!(state, Ok((ref value, Some(ref stored_class))) if value == &owner.expected && stored_class == class)
             && matches!(outcome, Ok(ref value) if value == &owner.expected);
+        #[cfg(test)]
+        OWNER_AFTER_VERIFY.with(|hook| {
+            if let Some(sender) = hook.borrow().as_ref() {
+                sender.send(Arc::clone(&cancelled)).unwrap();
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !cancelled.load(Ordering::Relaxed) && Instant::now() < deadline { std::thread::yield_now(); }
+            }
+        });
         let status = if verified {
             "verified"
         } else {
@@ -554,6 +562,14 @@ fn run_owner_inner(
     }
     let observed = broker.read_cancellable(&read, &cancelled);
     drop(broker);
+    #[cfg(test)]
+    OWNER_AFTER_VERIFY.with(|hook| {
+            if let Some(sender) = hook.borrow().as_ref() {
+                sender.send(Arc::clone(&cancelled)).unwrap();
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !cancelled.load(Ordering::Relaxed) && Instant::now() < deadline { std::thread::yield_now(); }
+            }
+        });
     let status = match observed {
         Ok(Some(value)) if value == owner.expected => "verified",
         Ok(_) => "verification_failed",
@@ -730,6 +746,7 @@ fn observe(
 
 #[cfg(test)]
 thread_local! {
+    static OWNER_AFTER_VERIFY: std::cell::RefCell<Option<std::sync::mpsc::Sender<Arc<AtomicBool>>>> = const { std::cell::RefCell::new(None) };
     static OBSERVE_AFTER_VERIFY: std::cell::RefCell<Option<Arc<std::sync::Barrier>>> = const { std::cell::RefCell::new(None) };
     static FAIL_OBSERVATION_RESULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FAIL_OUTCOME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -742,6 +759,48 @@ mod tests {
     use super::*;
     use jarvis::storage::Task;
     use serde_json::json;
+
+    #[test]
+    fn cancellation_at_owner_verification_preserves_durable_effects() {
+        for write in [false, true] {
+            let path = std::env::temp_dir().join(format!("agent-cancel-owner-{}-{write}", std::process::id()));
+            let mut store = SqliteStore::create(&path).unwrap();
+            store.create_task(&Task { id: "task".into(), version: 1, title: "test".into() }, "created", &[]).unwrap();
+            store.initialize_tool_budget(2).unwrap();
+            let expires = SystemTime::now() + Duration::from_secs(300);
+            let request = |tool: &str| ToolRequest { tool: tool.into(), action: tool.into(), resource: "mock/item".into(), data_class: DataClass::Public, arguments: json!({"text": if tool == "write" { "after" } else { "" }}) };
+            let tool = if write { "write" } else { "read" };
+            store.issue_tool_approval("first", "task", 1, &request(tool), expires).unwrap();
+            if write { store.issue_tool_approval("verify", "task", 1, &request("read"), expires).unwrap(); }
+            drop(store);
+            let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
+            db.execute("INSERT INTO mock_state VALUES ('mock/item', 'before', 'public')", []).unwrap();
+            drop(db);
+            let owner = json!({"store":path, "task":"task", "revision":1, "approval":"first", "read_approval":"verify", "resource":"mock/item", "data_class":"public", "permitted_text":"after", "expected":if write { "after" } else { "before" }, "expires_unix":expires.duration_since(UNIX_EPOCH).unwrap().as_secs(), "mode":if write { "write" } else { "read_only" }, "context":"test"});
+            let owner_path = path.join("owner.json");
+            let proposal_path = path.join("proposal.json");
+            std::fs::write(&owner_path, owner.to_string()).unwrap();
+            std::fs::write(&proposal_path, serde_json::to_string(&request(tool)).unwrap()).unwrap();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                OWNER_AFTER_VERIFY.with(|hook| *hook.borrow_mut() = Some(tx));
+                run_owner(owner_path.as_os_str(), proposal_path.as_os_str())
+            });
+            let cancelled = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            cancelled.store(true, Ordering::Relaxed);
+            assert_eq!(worker.join().unwrap(), Err("cancelled"));
+            let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
+            let state: (String, i64, i64, i64, i64, i64, i64) = db.query_row("SELECT (SELECT value FROM mock_state WHERE resource='mock/item'), (SELECT count(*) FROM tool_approvals WHERE consumed=1), (SELECT count(*) FROM tool_executions WHERE pending=0), (SELECT used FROM tool_budget), (SELECT pending FROM agent_runtime WHERE task_id='task'), (SELECT terminal FROM agent_runtime WHERE task_id='task'), (SELECT count(*) FROM events WHERE event LIKE '%verified%')", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))).unwrap();
+            let n = if write { 2 } else { 1 };
+            assert_eq!(state, (if write { "after" } else { "before" }.into(), n, n, n, 1, 0, 0));
+            drop(db);
+            let mut store = SqliteStore::open(&path).unwrap();
+            assert!(!store.agent_step("task", 1, 1, 1).unwrap());
+            store.reconcile_agent_runtime("task", 1, jarvis::storage::ReconciliationOutcome::Unknown, "owner inspected effects").unwrap();
+            drop(store);
+            std::fs::remove_dir_all(path).unwrap();
+        }
+    }
 
     #[test]
     fn empty_write_verification_requires_present_row() {
