@@ -625,6 +625,7 @@ impl SqliteStore {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn consume_tool_approval(
         &mut self,
         id: &str,
