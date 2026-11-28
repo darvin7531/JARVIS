@@ -25,7 +25,7 @@ fn queue_and_resource_claim_survive_restart_and_exclude_conflicts() {
     assert!(db
         .execute(
             "INSERT INTO task_resource_locks (resource, task_id) VALUES ('resource', 'second')",
-            []
+            [],
         )
         .is_err());
     drop(db);
