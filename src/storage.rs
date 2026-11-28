@@ -555,7 +555,7 @@ impl SqliteStore {
         if pending {
             return Ok(None);
         }
-        let conflict: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM task_resource_locks WHERE resource = ?1 AND task_id != ?2) OR EXISTS(SELECT 1 FROM task_queue WHERE task_id = ?2 AND (state != 'running' OR revision IS NOT ?3 OR resource != ?1 OR NOT EXISTS (SELECT 1 FROM task_resource_locks WHERE task_id = ?2 AND resource = ?1)))", params![request.resource, task, revision], |row| row.get(0))?;
+        let conflict: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM task_resource_locks WHERE resource = ?1) OR EXISTS(SELECT 1 FROM task_queue WHERE task_id = ?2)", params![request.resource, task], |row| row.get(0))?;
         if conflict {
             return Ok(Some(false));
         }
@@ -949,7 +949,8 @@ impl SqliteStore {
         if restored {
             return Ok(false);
         }
-        let unclaimed: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM task_queue q WHERE q.task_id = ?1 AND (q.state != 'running' OR q.revision IS NOT ?2 OR NOT EXISTS (SELECT 1 FROM task_resource_locks l WHERE l.task_id = q.task_id AND l.resource = q.resource)))", params![task, revision], |row| row.get(0))?;
+        // ponytail: queued execution is disabled until claims carry fenced, unforgeable authority.
+        let unclaimed: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM task_queue WHERE task_id = ?1)", [task], |row| row.get(0))?;
         if unclaimed {
             return Ok(false);
         }

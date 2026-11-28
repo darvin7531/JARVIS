@@ -26,6 +26,10 @@ fn direct_broker_cannot_use_another_workers_claim() {
         .unwrap();
     store.enqueue_task("task", "mock/item").unwrap();
     assert!(store.claim_task("task").unwrap());
+    assert!(!store.agent_step("task", 1, 2, 2).unwrap());
+    assert!(store.recover_task("task").unwrap());
+    assert!(store.claim_task("task").unwrap());
+    assert!(!store.agent_step("task", 1, 2, 2).unwrap());
     drop(store);
     let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
     db.execute("INSERT INTO mock_state(resource,value,data_class) VALUES ('mock/item','original','public')", []).unwrap();
