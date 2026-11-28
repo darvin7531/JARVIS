@@ -304,7 +304,7 @@ fn configured_rejection_finishes_only_proven_pre_dispatch_steps() {
     use jarvis::storage::{SqliteStore, Task};
     use std::{io::Read, net::TcpListener};
 
-    for case in ["policy", "budget", "unknown"] {
+    for case in ["policy", "budget", "input", "unknown"] {
         let root =
             std::env::temp_dir().join(format!("agent-rejection-{}-{case}", std::process::id()));
         let mut store = SqliteStore::create(&root).unwrap();
@@ -323,7 +323,7 @@ fn configured_rejection_finishes_only_proven_pre_dispatch_steps() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let owner = json!({"store":root,"task":"task","revision":1,"approval":"write","read_approval":"read","resource":"mock/item","data_class":if case == "policy" {"sensitive"} else {"public"},"permitted_text":"x","expected":"x","expires_unix":4102444800_u64,"mode":"write", "context":"produce a proposal"});
-        let config = json!({"models":[{"name":"model","tier":"t1","capabilities":["text"],"allowed_data":["public"],"trusted_no_truncation":true,"port":listener.local_addr().unwrap().port()}],"limits":{"max_tokens":100},"budget":{"workspace":root,"limit_tokens":if case == "budget" {0} else {1000},"max_input_tokens":200}});
+        let config = json!({"models":[{"name":"model","tier":"t1","capabilities":["text"],"allowed_data":["public"],"trusted_no_truncation":true,"port":listener.local_addr().unwrap().port()}],"limits":{"max_tokens":100},"budget":{"workspace":root,"limit_tokens":if case == "budget" {0} else {4096},"max_input_tokens":if case == "input" {1} else {2048}}});
         let owner_path = root.join("owner.json");
         let config_path = root.join("config.json");
         std::fs::write(&owner_path, owner.to_string()).unwrap();
