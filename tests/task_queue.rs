@@ -47,3 +47,26 @@ fn queue_and_resource_claim_survive_restart_and_exclude_conflicts() {
     drop(db);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn waiting_states_survive_restart() {
+    let dir = std::env::temp_dir().join(format!("jarvis-waiting-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut store = SqliteStore::create(&dir).unwrap();
+    for id in ["approval", "event"] {
+        store.create_task(&Task { id: id.into(), version: 1, title: id.into() }, "created", &[]).unwrap();
+    }
+    drop(store);
+    let db = Connection::open(dir.join("jarvis.sqlite3")).unwrap();
+    db.execute("INSERT INTO task_queue (task_id, state, resource) VALUES ('approval', 'waiting_approval', 'a')", []).expect("waiting approval must be persistable");
+    db.execute("INSERT INTO task_queue (task_id, state, resource) VALUES ('event', 'waiting_event', 'b')", []).expect("waiting event must be persistable");
+    drop(db);
+    drop(SqliteStore::open(&dir).unwrap());
+    let db = Connection::open(dir.join("jarvis.sqlite3")).unwrap();
+    for (id, expected) in [("approval", "waiting_approval"), ("event", "waiting_event")] {
+        let state: String = db.query_row("SELECT state FROM task_queue WHERE task_id = ?1", [id], |r| r.get(0)).unwrap();
+        assert_eq!(state, expected);
+    }
+    drop(db);
+    std::fs::remove_dir_all(dir).unwrap();
+}
