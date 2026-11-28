@@ -35,6 +35,7 @@ pub enum ReconciliationOutcome {
 #[derive(Debug)]
 pub enum StorageError {
     OperationFailed,
+    Busy,
     UnsupportedSchema,
 }
 
@@ -42,6 +43,7 @@ impl fmt::Display for StorageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::OperationFailed => "storage operation failed",
+            Self::Busy => "storage busy",
             Self::UnsupportedSchema => "unsupported schema version",
         })
     }
@@ -50,8 +52,18 @@ impl fmt::Display for StorageError {
 impl std::error::Error for StorageError {}
 
 impl From<rusqlite::Error> for StorageError {
-    fn from(_: rusqlite::Error) -> Self {
-        Self::OperationFailed
+    fn from(error: rusqlite::Error) -> Self {
+        match error {
+            rusqlite::Error::SqliteFailure(error, _)
+                if matches!(
+                    error.code,
+                    rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                ) =>
+            {
+                Self::Busy
+            }
+            _ => Self::OperationFailed,
+        }
     }
 }
 
@@ -69,7 +81,10 @@ fn sqlite_contention_is_distinct_and_sanitized() {
         rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_IOERR),
         Some("secret".into()),
     );
-    assert_eq!(StorageError::from(error).to_string(), "storage operation failed");
+    assert_eq!(
+        StorageError::from(error).to_string(),
+        "storage operation failed"
+    );
 }
 
 fn validate_schema(db: &Connection, version: i64) -> Result<(), StorageError> {

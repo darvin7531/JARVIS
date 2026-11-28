@@ -358,6 +358,41 @@ fn stale_revision_cannot_checkpoint_newer_task() {
 }
 
 #[test]
+fn admission_lock_timeout_fails_closed() {
+    let path = std::env::temp_dir().join(format!("jarvis-owner-lock-{}", std::process::id()));
+    let mut store = SqliteStore::create(&path).unwrap();
+    store
+        .create_task(
+            &Task {
+                id: "task".into(),
+                version: 1,
+                title: "test".into(),
+            },
+            "created",
+            &[],
+        )
+        .unwrap();
+    let db = rusqlite::Connection::open(path.join("jarvis.sqlite3")).unwrap();
+    db.execute_batch("BEGIN IMMEDIATE").unwrap();
+    assert!(matches!(
+        store.agent_step("task", 1, 1, 1),
+        Err(jarvis::storage::StorageError::Busy)
+    ));
+    db.execute_batch("ROLLBACK").unwrap();
+    db.execute_batch("CREATE TRIGGER reject_admission BEFORE INSERT ON agent_runtime BEGIN SELECT RAISE(ABORT, 'secret'); END;").unwrap();
+    assert!(matches!(
+        store.agent_step("task", 1, 1, 1),
+        Err(jarvis::storage::StorageError::OperationFailed)
+    ));
+    db.execute_batch("DROP TRIGGER reject_admission").unwrap();
+    assert!(store.agent_step("task", 1, 1, 1).unwrap());
+    assert!(!store.agent_step("task", 1, 1, 1).unwrap());
+    drop(store);
+    drop(db);
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn concurrent_admission_and_limit_changes_are_denied() {
     let path = std::env::temp_dir().join(format!("jarvis-owner-concurrent-{}", std::process::id()));
     let mut store = SqliteStore::create(&path).unwrap();
@@ -381,7 +416,11 @@ fn concurrent_admission_and_limit_changes_are_denied() {
             std::thread::spawn(move || {
                 let mut store = SqliteStore::open(&path).unwrap();
                 barrier.wait();
-                store.agent_step("task", 1, 1, 1).unwrap()
+                match store.agent_step("task", 1, 1, 1) {
+                    Ok(admitted) => admitted,
+                    Err(jarvis::storage::StorageError::Busy) => false,
+                    Err(error) => panic!("unexpected admission error: {error}"),
+                }
             })
         })
         .collect();
