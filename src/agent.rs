@@ -460,10 +460,13 @@ fn run_owner_inner(
                 true,
                 r#"{"type":"checkpoint","status":"denied_or_failed"}"#,
                 &cancelled,
+                expires,
             )
             .map_err(|e| {
                 if matches!(e, jarvis::storage::StorageError::Cancelled) {
                     "cancelled"
+                } else if matches!(e, jarvis::storage::StorageError::Expired) {
+                    "agent_expired"
                 } else {
                     "agent_storage"
                 }
@@ -515,10 +518,13 @@ fn run_owner_inner(
                 !verified,
                 &serde_json::json!({"type":"checkpoint", "status":status, "changes":0}).to_string(),
                 &cancelled,
+                expires,
             )
             .map_err(|e| {
                 if matches!(e, jarvis::storage::StorageError::Cancelled) {
                     "cancelled"
+                } else if matches!(e, jarvis::storage::StorageError::Expired) {
+                    "agent_expired"
                 } else {
                     "agent_storage"
                 }
@@ -611,12 +617,17 @@ fn run_owner_inner(
             status != "verified",
             &serde_json::json!({"type":"checkpoint", "status":status}).to_string(),
             &cancelled,
+            expires,
         )
         .map_err(|e| {
             if matches!(e, jarvis::storage::StorageError::Cancelled)
                 && status != "verification_uncertain"
             {
                 "cancelled"
+            } else if matches!(e, jarvis::storage::StorageError::Expired)
+                && status != "verification_uncertain"
+            {
+                "agent_expired"
             } else {
                 storage_error
             }
@@ -764,10 +775,13 @@ fn observe(
             !verified,
             &serde_json::json!({"type":"checkpoint","status":status,"changes":0}).to_string(),
             cancelled,
+            expires,
         )
         .map_err(|e| {
             if matches!(e, jarvis::storage::StorageError::Cancelled) {
                 "cancelled"
+            } else if matches!(e, jarvis::storage::StorageError::Expired) {
+                "agent_expired"
             } else {
                 "agent_storage"
             }
@@ -1148,9 +1162,19 @@ mod tests {
             "lock_expire" => {
                 db.execute_batch("BEGIN IMMEDIATE").unwrap();
                 assert!(SystemTime::now() < observe_expiry);
-                std::thread::sleep(observe_expiry.duration_since(SystemTime::now()).unwrap_or_default().saturating_sub(Duration::from_millis(50)));
+                std::thread::sleep(
+                    observe_expiry
+                        .duration_since(SystemTime::now())
+                        .unwrap_or_default()
+                        .saturating_sub(Duration::from_millis(50)),
+                );
                 barrier.wait();
-                std::thread::sleep(observe_expiry.duration_since(SystemTime::now()).unwrap_or_default() + Duration::from_millis(10));
+                std::thread::sleep(
+                    observe_expiry
+                        .duration_since(SystemTime::now())
+                        .unwrap_or_default()
+                        + Duration::from_millis(10),
+                );
                 db.execute_batch("COMMIT").unwrap();
             }
             "storage" => (),

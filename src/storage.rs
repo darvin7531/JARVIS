@@ -37,6 +37,7 @@ pub enum StorageError {
     OperationFailed,
     Busy,
     Cancelled,
+    Expired,
     UnsupportedSchema,
 }
 
@@ -46,6 +47,7 @@ impl fmt::Display for StorageError {
             Self::OperationFailed => "storage operation failed",
             Self::Busy => "storage busy",
             Self::Cancelled => "cancelled",
+            Self::Expired => "expired",
             Self::UnsupportedSchema => "unsupported schema version",
         })
     }
@@ -793,6 +795,7 @@ impl SqliteStore {
         failed: bool,
         event: &str,
         cancelled: &std::sync::atomic::AtomicBool,
+        expires: std::time::SystemTime,
     ) -> Result<(), StorageError> {
         let tx = self
             .db
@@ -800,14 +803,20 @@ impl SqliteStore {
         if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(StorageError::Cancelled);
         }
+        if std::time::SystemTime::now() >= expires {
+            return Err(StorageError::Expired);
+        }
         let changed = tx.execute("UPDATE agent_runtime SET failures = failures + ?3, pending = 0, terminal = 1 WHERE task_id = ?1 AND revision = ?2 AND pending = 1 AND terminal = 0 AND closed = 0 AND EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND version = ?2)", params![task, revision, failed as i64])?;
         if changed != 1 {
             return Err(StorageError::OperationFailed);
         }
         tx.execute("INSERT INTO events (task_id, event, revision, occurred_at) VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))", params![task, event, revision])?;
-        // Cancellation racing this last check and commit may still commit.
+        // Cancellation or expiry racing this last check and commit may still commit.
         if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(StorageError::Cancelled);
+        }
+        if std::time::SystemTime::now() >= expires {
+            return Err(StorageError::Expired);
         }
         tx.commit()?;
         Ok(())
@@ -1070,6 +1079,7 @@ mod backup_tests {
                 false,
                 r#"{"type":"checkpoint","status":"verified"}"#,
                 &worker_cancelled,
+                std::time::SystemTime::now() + Duration::from_secs(60),
             )
         });
         let deadline = Instant::now() + Duration::from_secs(10);
