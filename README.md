@@ -67,6 +67,11 @@ The fixed registry also provides mock `write` and `read` tools, operating only o
 
 ### Configured owner agent inference
 
+Expired owner requests are rejected before agent steps and checked again after
+step and inference-budget admission waits, before contacting the model. Expiry
+cannot retract an already dispatched request; clock changes or process suspension
+can occur after the final check.
+
 `jarvis agent --owner OWNER.json --config CHAT.json` uses the same configured
 routing, trust assertions, timeout, input/output bounds, and persisted token
 budget as `chat --config`. The owner file's `data_class` classifies the entire

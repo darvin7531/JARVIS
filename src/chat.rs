@@ -11,7 +11,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 #[derive(Deserialize)]
@@ -267,6 +267,7 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
         class,
         &cancelled,
         started,
+        None,
         &mut false,
         &mut |text| {
             let escaped;
@@ -299,6 +300,7 @@ pub fn agent_inference(
     prompt: &str,
     class: DataClass,
     cancelled: &Arc<AtomicBool>,
+    expires: SystemTime,
 ) -> Result<String, (&'static str, bool)> {
     let mut output = String::new();
     let mut dispatched = false;
@@ -311,6 +313,7 @@ pub fn agent_inference(
         class,
         cancelled,
         Instant::now(),
+        Some(expires),
         &mut dispatched,
         &mut |chunk| {
             output.push_str(chunk);
@@ -331,6 +334,7 @@ fn configured_inference(
     class: DataClass,
     cancelled: &Arc<AtomicBool>,
     started: Instant,
+    expires: Option<SystemTime>,
     dispatched: &mut bool,
     emit: &mut dyn FnMut(&str) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
@@ -433,13 +437,16 @@ fn configured_inference(
     let remaining = timeout
         .checked_sub(started.elapsed())
         .filter(|d| !d.is_zero());
-    if cancelled.load(Ordering::Relaxed) || remaining.is_none() {
+    let expired = expires.is_some_and(|expiry| SystemTime::now() >= expiry);
+    if cancelled.load(Ordering::Relaxed) || remaining.is_none() || expired {
         reservation
             .0
             .settle_tokens(reservation.1, 0)
             .map_err(|_| "budget_storage_failed")?;
         return Err(if cancelled.load(Ordering::Relaxed) {
             "cancelled"
+        } else if expired {
+            "agent_expired"
         } else {
             "timeout"
         });

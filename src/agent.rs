@@ -234,7 +234,8 @@ fn run_owner_inner(
         serde_json::from_str(&bounded_file(owner_file)?).map_err(|_| "agent_input")?;
     let expires = UNIX_EPOCH
         .checked_add(Duration::from_secs(owner.expires_unix))
-        .ok_or("agent_input")?;
+        .filter(|expiry| *expiry > SystemTime::now())
+        .ok_or("agent_expired")?;
     if !(1..=32).contains(&owner.max_steps) || !(1..=32).contains(&owner.max_failures) {
         return Err("agent_input");
     }
@@ -279,12 +280,18 @@ fn run_owner_inner(
         {
             return Err("agent_steps");
         }
+        if SystemTime::now() >= expires {
+            store
+                .finish_agent_step(&owner.task, owner.revision, true, false)
+                .map_err(|_| "agent_storage")?;
+            return Err("agent_expired");
+        }
         let output = if let Some(config) = &config {
             let class = match owner.data_class {
                 DataClass::Public => jarvis::inference::DataClass::Public,
                 DataClass::Sensitive => jarvis::inference::DataClass::Sensitive,
             };
-            match crate::chat::agent_inference(config, &owner.context, class, &cancelled) {
+            match crate::chat::agent_inference(config, &owner.context, class, &cancelled, expires) {
                 Ok(output) => output,
                 Err((error, dispatched)) => {
                     if !dispatched {

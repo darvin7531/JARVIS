@@ -2,6 +2,59 @@ use serde_json::json;
 use std::process::Command;
 
 #[test]
+fn expired_owner_never_discloses_context_or_starts_a_step() {
+    use jarvis::storage::{SqliteStore, Task};
+    use std::net::TcpListener;
+
+    let root = std::env::temp_dir().join(format!("agent-expired-{}", std::process::id()));
+    let mut store = SqliteStore::create(&root).unwrap();
+    store
+        .create_task(
+            &Task {
+                id: "task".into(),
+                version: 1,
+                title: "test".into(),
+            },
+            "created",
+            &[],
+        )
+        .unwrap();
+    drop(store);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let owner = json!({"store":root,"task":"task","revision":1,"approval":"write","read_approval":"read","resource":"mock/item","data_class":"public","permitted_text":"x","expected":"x","expires_unix":1,"mode":"write","context":"private context"});
+    let config = json!({"models":[{"name":"model","tier":"t1","capabilities":["text"],"allowed_data":["public"],"trusted_no_truncation":true,"port":listener.local_addr().unwrap().port()}],"limits":{"max_tokens":100},"budget":{"workspace":root,"limit_tokens":1000,"max_input_tokens":200}});
+    let owner_path = root.join("owner.json");
+    let config_path = root.join("config.json");
+    std::fs::write(&owner_path, owner.to_string()).unwrap();
+    std::fs::write(&config_path, config.to_string()).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_jarvis"))
+        .args(["agent", "--owner"])
+        .arg(owner_path)
+        .arg("--config")
+        .arg(config_path)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("agent_expired"));
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    let db = rusqlite::Connection::open(root.join("jarvis.sqlite3")).unwrap();
+    let counts: (i64, i64) = db
+        .query_row(
+            "SELECT (SELECT count(*) FROM agent_runtime), (SELECT count(*) FROM inference_budget)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(counts, (0, 0));
+    drop(db);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn configured_agent_reaches_shared_config_validation() {
     let path = std::env::temp_dir().join(format!("agent-configured-{}", std::process::id()));
     std::fs::create_dir(&path).unwrap();
