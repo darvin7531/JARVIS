@@ -133,8 +133,34 @@ fn configured_proposals_require_complete_stream_and_exact_approval() {
         let proposal = json!({"kind":"tool", "request":request("write", proposed)}).to_string();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
+            let mut bytes = Vec::new();
             let mut buf = [0; 4096];
-            assert!(stream.read(&mut buf).unwrap() > 0);
+            let body_start = loop {
+                let n = stream.read(&mut buf).unwrap();
+                assert!(n > 0);
+                bytes.extend_from_slice(&buf[..n]);
+                if let Some(pos) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break pos + 4;
+                }
+            };
+            let headers = String::from_utf8_lossy(&bytes[..body_start]);
+            let length: usize = headers.lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length").then(|| value.trim().parse().unwrap())
+            }).unwrap();
+            while bytes.len() < body_start + length {
+                let n = stream.read(&mut buf).unwrap();
+                assert!(n > 0);
+                bytes.extend_from_slice(&buf[..n]);
+            }
+            let payload: serde_json::Value = serde_json::from_slice(&bytes[body_start..body_start + length]).unwrap();
+            let prompt: serde_json::Value = serde_json::from_str(payload["prompt"].as_str().unwrap()).unwrap();
+            assert_eq!(prompt["objective"], "produce a JSON proposal");
+            assert_eq!(prompt["scope"]["tool"], "write");
+            assert_eq!(prompt["scope"]["resource"], "mock/item");
+            assert_eq!(prompt["scope"]["arguments"]["text"], "approved");
+            assert!(prompt["constraints"].as_str().unwrap().contains("untrusted"));
+            assert!(prompt["proposal_schema"].is_object());
             let body = format!(
                 "{}\n{}\n",
                 json!({"response":proposal,"done":false}),
