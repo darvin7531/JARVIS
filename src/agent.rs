@@ -117,6 +117,13 @@ fn approval_fd(fd: i32, output: bool) -> Result<std::fs::File, &'static str> {
     if !matches!(mode, libc::S_IFIFO | libc::S_IFREG | libc::S_IFCHR) {
         return Err("agent_io");
     }
+    if mode == libc::S_IFCHR && unsafe { libc::isatty(fd) } != 1 {
+        use std::os::unix::fs::MetadataExt;
+        let null = std::fs::metadata("/dev/null").map_err(|_| "agent_io")?;
+        if unsafe { stat.assume_init() }.st_rdev != null.rdev() {
+            return Err("agent_io");
+        }
+    }
     if mode == libc::S_IFREG {
         use std::os::fd::FromRawFd;
         let copy = unsafe { libc::dup(fd) };
