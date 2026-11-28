@@ -13,6 +13,7 @@ jobs:
           toolchain: 1.89.0
           components: rustfmt, clippy
       - run: cargo test --locked cancellation_while_waiting_for_approval_lock_rolls_back
+      - run: cargo test --locked --lib tool_policy::tests::killed_after_write_requires_owner_reconciliation -- --exact
       - run: cargo test --locked --bin jarvis agent::tests::verification_uncertainty_survives_checkpoint_store_failure -- --exact
       - run: cargo test --locked --bin jarvis agent::tests::existing_pending_tool_requires_agent_reconciliation -- --exact
       - run: cargo test --locked --test storage --test shared_budget --test tool_broker
