@@ -71,10 +71,8 @@ impl From<rusqlite::Error> for StorageError {
 #[test]
 fn sqlite_contention_is_distinct_and_sanitized() {
     for code in [rusqlite::ffi::SQLITE_BUSY, rusqlite::ffi::SQLITE_LOCKED] {
-        let error = rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error::new(code),
-            Some("secret".into()),
-        );
+        let error =
+            rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), Some("secret".into()));
         assert_eq!(StorageError::from(error).to_string(), "storage busy");
     }
     let error = rusqlite::Error::SqliteFailure(
