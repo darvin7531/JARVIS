@@ -408,6 +408,21 @@ mod tests {
             )
             .unwrap();
         store.initialize_tool_budget(2).unwrap();
+        store.enqueue_task("task", "mock/item").unwrap();
+        assert!(store.claim_task("task").unwrap());
+        store
+            .create_task(
+                &Task {
+                    id: "other".into(),
+                    version: 1,
+                    title: "other".into(),
+                },
+                "created",
+                &[],
+            )
+            .unwrap();
+        store.enqueue_task("other", "mock/item").unwrap();
+        assert!(!store.claim_task("other").unwrap());
         for id in ["one", "two"] {
             store
                 .issue_tool_approval(
@@ -465,9 +480,30 @@ mod tests {
         drop(broker);
         assert_eq!(snapshot(), ("written".into(), 1, 0, 1, 1, 0));
         let mut store = SqliteStore::open(&path).unwrap();
+        assert!(!store.recover_task("task").unwrap());
+        assert!(!store.claim_task("other").unwrap());
+        assert!(store
+            .close_recovered_task("task", ReconciliationOutcome::Succeeded, "observed write")
+            .is_err());
+        let holder: String = db
+            .query_row(
+                "SELECT task_id FROM task_resource_locks WHERE resource='mock/item'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(holder, "task");
         store
             .reconcile_tool_execution("one", ReconciliationOutcome::Succeeded)
             .unwrap();
+        assert!(!store.recover_task("task").unwrap());
+        assert!(store
+            .close_recovered_task("task", ReconciliationOutcome::Unknown, "unknown")
+            .is_err());
+        store
+            .close_recovered_task("task", ReconciliationOutcome::Succeeded, "observed write")
+            .unwrap();
+        assert!(store.enqueue_task("task", "mock/item").is_err());
         assert!(store
             .reconcile_tool_execution("one", ReconciliationOutcome::Succeeded)
             .is_err());
@@ -481,6 +517,9 @@ mod tests {
         assert_eq!(broker.executions(), 0);
         drop(broker);
         assert_eq!(snapshot(), ("written".into(), 1, 0, 1, 0, 0));
+        let mut store = SqliteStore::open(&path).unwrap();
+        assert!(store.claim_task("other").unwrap());
+        drop(store);
         drop(db);
         std::fs::remove_dir_all(path).unwrap();
     }

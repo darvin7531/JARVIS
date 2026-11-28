@@ -169,6 +169,75 @@ fn mock_class(class: crate::tool_policy::DataClass) -> &'static str {
 }
 
 impl SqliteStore {
+    /// Enqueue only a fresh task. Historical executions require a new task ID;
+    /// this avoids silently replaying a reconciled or partially completed run.
+    pub fn enqueue_task(&mut self, task: &str, resource: &str) -> Result<(), StorageError> {
+        let changed = self.db.execute("INSERT INTO task_queue (task_id, state, resource) SELECT id, 'queued', ?2 FROM tasks WHERE id = ?1 AND length(?2) > 0 AND NOT EXISTS (SELECT 1 FROM agent_runtime WHERE task_id = ?1) AND NOT EXISTS (SELECT 1 FROM tool_approvals a JOIN tool_executions e ON e.approval_id = a.id WHERE a.task_id = ?1)", params![task, resource])?;
+        if changed != 1 {
+            return Err(StorageError::OperationFailed);
+        }
+        Ok(())
+    }
+
+    /// Claim atomically; unresolved inference has no task identity, so blocks
+    /// the entire workspace until its usage is reconciled.
+    pub fn claim_task(&mut self, task: &str) -> Result<bool, StorageError> {
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let changed = tx.execute("INSERT OR IGNORE INTO task_resource_locks (resource, task_id) SELECT resource, task_id FROM task_queue WHERE task_id = ?1 AND state = 'queued' AND NOT EXISTS (SELECT 1 FROM inference_budget WHERE pending = 1) AND NOT EXISTS (SELECT 1 FROM tool_executions WHERE pending = 1) AND NOT EXISTS (SELECT 1 FROM agent_runtime WHERE closed = 0 OR task_id = ?1) AND NOT EXISTS (SELECT 1 FROM tool_approvals a JOIN tool_executions e ON e.approval_id = a.id WHERE a.task_id = ?1)", [task])?;
+        if changed == 1 {
+            tx.execute(
+                "UPDATE task_queue SET state = 'running' WHERE task_id = ?1",
+                [task],
+            )?;
+        }
+        tx.commit()?;
+        Ok(changed == 1)
+    }
+
+    /// Trusted owner only, after stopping every worker. Safe unstarted claims
+    /// can be requeued; evidence of dispatch is never automatically replayed.
+    pub fn recover_task(&mut self, task: &str) -> Result<bool, StorageError> {
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let changed = tx.execute("UPDATE task_queue SET state = 'queued' WHERE task_id = ?1 AND state = 'running' AND EXISTS (SELECT 1 FROM task_resource_locks WHERE task_id = ?1 AND resource = task_queue.resource) AND NOT EXISTS (SELECT 1 FROM inference_budget WHERE pending = 1) AND NOT EXISTS (SELECT 1 FROM tool_executions WHERE pending = 1) AND NOT EXISTS (SELECT 1 FROM agent_runtime WHERE closed = 0 OR task_id = ?1) AND NOT EXISTS (SELECT 1 FROM tool_approvals a JOIN tool_executions e ON e.approval_id = a.id WHERE a.task_id = ?1)", [task])?;
+        if changed == 1 {
+            tx.execute("DELETE FROM task_resource_locks WHERE task_id = ?1", [task])?;
+        }
+        tx.commit()?;
+        Ok(changed == 1)
+    }
+
+    /// Trusted owner closes a reconciled claim, without requeue or refund.
+    pub fn close_recovered_task(
+        &mut self,
+        task: &str,
+        outcome: ReconciliationOutcome,
+        evidence: &str,
+    ) -> Result<(), StorageError> {
+        if matches!(outcome, ReconciliationOutcome::Unknown)
+            || evidence.trim().is_empty()
+            || evidence.len() > 1024
+        {
+            return Err(StorageError::OperationFailed);
+        }
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let safe: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM task_queue q JOIN task_resource_locks l ON l.task_id = q.task_id AND l.resource = q.resource WHERE q.task_id = ?1 AND q.state = 'running') AND NOT EXISTS (SELECT 1 FROM inference_budget WHERE pending = 1) AND NOT EXISTS (SELECT 1 FROM tool_executions WHERE pending = 1) AND NOT EXISTS (SELECT 1 FROM agent_runtime WHERE task_id = ?1 AND closed = 0)", [task], |r| r.get(0))?;
+        if !safe {
+            return Err(StorageError::OperationFailed);
+        }
+        let event = serde_json::json!({"type":"task_recovery_closed", "outcome":outcome, "evidence":evidence}).to_string();
+        tx.execute("INSERT INTO events (task_id, event, revision, occurred_at) SELECT id, ?2, version, strftime('%Y-%m-%dT%H:%M:%fZ', 'now') FROM tasks WHERE id = ?1", params![task, event])?;
+        tx.execute("DELETE FROM task_resource_locks WHERE task_id = ?1", [task])?;
+        tx.execute("DELETE FROM task_queue WHERE task_id = ?1", [task])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn create(path: &Path) -> Result<Self, StorageError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|_| StorageError::OperationFailed)?;
@@ -379,6 +448,10 @@ impl SqliteStore {
             |row| row.get(0),
         )?;
         if pending {
+            return Ok(None);
+        }
+        let conflict: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM task_resource_locks WHERE resource = ?1 AND task_id != ?2) OR EXISTS(SELECT 1 FROM task_queue WHERE task_id = ?2 AND (state != 'running' OR resource != ?1 OR NOT EXISTS (SELECT 1 FROM task_resource_locks WHERE task_id = ?2 AND resource = ?1)))", params![request.resource, task], |row| row.get(0))?;
+        if conflict {
             return Ok(None);
         }
         if matches!(request.tool.as_str(), "read" | "write") {

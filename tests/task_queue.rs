@@ -47,3 +47,65 @@ fn queue_and_resource_claim_survive_restart_and_exclude_conflicts() {
     drop(db);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn recovery_preserves_unknown_runtime_and_inference() {
+    let dir = std::env::temp_dir().join(format!("jarvis-queue-recovery-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut store = SqliteStore::create(&dir).unwrap();
+    for id in ["first", "second"] {
+        store
+            .create_task(
+                &Task {
+                    id: id.into(),
+                    version: 1,
+                    title: id.into(),
+                },
+                "created",
+                &[],
+            )
+            .unwrap();
+        store.enqueue_task(id, "resource").unwrap();
+    }
+    assert!(store.claim_task("first").unwrap());
+    let reservation = store.reserve_tokens(100, 10).unwrap().unwrap();
+    drop(store);
+    let mut store = SqliteStore::open(&dir).unwrap();
+    assert!(!store.recover_task("first").unwrap());
+    assert!(!store.claim_task("second").unwrap());
+    store.settle_tokens(reservation, 10).unwrap();
+    assert!(store.recover_task("first").unwrap());
+    assert!(store.claim_task("first").unwrap());
+    assert!(store.agent_step("first", 1, 2, 2).unwrap());
+    drop(store);
+    let mut store = SqliteStore::open(&dir).unwrap();
+    assert!(!store.recover_task("first").unwrap());
+    assert!(!store.claim_task("second").unwrap());
+    assert!(store
+        .close_recovered_task(
+            "first",
+            jarvis::storage::ReconciliationOutcome::Succeeded,
+            "checked"
+        )
+        .is_err());
+    store
+        .reconcile_agent_runtime(
+            "first",
+            1,
+            jarvis::storage::ReconciliationOutcome::Succeeded,
+            "checked",
+        )
+        .unwrap();
+    assert!(!store.recover_task("first").unwrap());
+    store
+        .close_recovered_task(
+            "first",
+            jarvis::storage::ReconciliationOutcome::Succeeded,
+            "checked",
+        )
+        .unwrap();
+    assert!(store.enqueue_task("first", "resource").is_err());
+    assert!(store.claim_task("second").unwrap());
+    drop(store);
+    std::fs::remove_dir_all(dir).unwrap();
+}
