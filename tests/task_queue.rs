@@ -49,6 +49,32 @@ fn queue_and_resource_claim_survive_restart_and_exclude_conflicts() {
 }
 
 #[test]
+fn queued_task_cannot_start_agent_without_claim() {
+    let dir = std::env::temp_dir().join(format!("jarvis-queue-admission-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut store = SqliteStore::create(&dir).unwrap();
+    store
+        .create_task(
+            &Task {
+                id: "task".into(),
+                version: 1,
+                title: "task".into(),
+            },
+            "created",
+            &[],
+        )
+        .unwrap();
+    store.enqueue_task("task", "resource").unwrap();
+    assert!(!store.agent_step("task", 1, 2, 2).unwrap());
+    drop(store);
+    let mut store = SqliteStore::open(&dir).unwrap();
+    assert!(store.claim_task("task").unwrap());
+    assert!(store.agent_step("task", 1, 2, 2).unwrap());
+    drop(store);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn recovery_preserves_unknown_runtime_and_inference() {
     let dir = std::env::temp_dir().join(format!("jarvis-queue-recovery-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
