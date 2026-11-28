@@ -867,7 +867,21 @@ mod tests {
         server.join().unwrap();
         let state: (i64, i64, i64, i64) = db.query_row("SELECT (SELECT pending FROM agent_runtime WHERE task_id='task'), (SELECT terminal FROM agent_runtime WHERE task_id='task'), (SELECT count(*) FROM tool_approvals WHERE consumed=1), (SELECT used FROM tool_budget)", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
         assert_eq!(state, (1, 0, 2, 2));
+        let results: i64 = db
+            .query_row(
+                "SELECT count(*) FROM events WHERE event LIKE '%verified%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(results, 0);
+        if boundary == "storage" {
+            db.execute_batch("DROP TRIGGER reject_result").unwrap();
+        }
         drop(db);
+        let mut reopened = SqliteStore::open(&root).unwrap();
+        assert!(!reopened.agent_step("task", 1, 1, 1).unwrap());
+        drop(reopened);
         std::fs::remove_dir_all(root).unwrap();
     }
 
