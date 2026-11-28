@@ -209,7 +209,7 @@ fn migration_preserves_existing_queue_and_locks() {
     let db = Connection::open(dir.join("jarvis.sqlite3")).unwrap();
     let row: (String,String) = db.query_row("SELECT q.state,l.resource FROM task_queue q JOIN task_resource_locks l ON q.task_id=l.task_id WHERE q.task_id='old'", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
     assert_eq!(row, ("running".into(), "res".into()));
-    db.execute_batch("DROP TABLE task_capacity; ALTER TABLE task_queue DROP COLUMN retry_limit; ALTER TABLE task_queue DROP COLUMN foreground; ALTER TABLE task_queue DROP COLUMN deadline; ALTER TABLE task_queue DROP COLUMN claim_budget_id; PRAGMA user_version=16;")
+    db.execute_batch("DROP TABLE task_capacity; ALTER TABLE task_queue DROP COLUMN claim_token; ALTER TABLE task_queue DROP COLUMN claim_generation; ALTER TABLE task_queue DROP COLUMN retry_limit; ALTER TABLE task_queue DROP COLUMN foreground; ALTER TABLE task_queue DROP COLUMN deadline; ALTER TABLE task_queue DROP COLUMN claim_budget_id; PRAGMA user_version=16;")
         .unwrap();
     drop(db);
     drop(SqliteStore::open(&dir).unwrap());
