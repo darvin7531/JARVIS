@@ -269,6 +269,7 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), &'static str>
         started,
         None,
         &mut false,
+        false,
         &mut |text| {
             let escaped;
             let text = if tty {
@@ -321,6 +322,7 @@ pub fn agent_inference(
         Instant::now(),
         Some(expires),
         &mut dispatched,
+        true,
         &mut |chunk| {
             output.push_str(chunk);
             Ok(())
@@ -342,6 +344,7 @@ fn configured_inference(
     started: Instant,
     expires: Option<SystemTime>,
     dispatched: &mut bool,
+    structured: bool,
     emit: &mut dyn FnMut(&str) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
     let timeout = Duration::from_secs(config.limits.timeout_seconds);
@@ -471,11 +474,25 @@ fn configured_inference(
     let mut failure = None;
     // From this boundary onward, failures cannot prove the provider saw nothing.
     *dispatched = true;
+    // This constrains syntax only; broker policy and approvals remain authoritative.
+    let proposal_schema = serde_json::json!({
+        "oneOf": [
+            {"type":"object", "properties":{
+                "kind":{"const":"tool"},
+                "request":{"type":"object", "properties":{
+                    "tool":{"type":"string"}, "action":{"type":"string"},
+                    "resource":{"type":"string"}, "data_class":{"enum":["public","sensitive"]},
+                    "arguments":{"type":"object"}
+                }, "required":["tool","action","resource","data_class","arguments"], "additionalProperties":false}
+            }, "required":["kind","request"], "additionalProperties":false},
+            {"type":"object", "properties":{"kind":{"const":"continue"}}, "required":["kind"], "additionalProperties":false}
+        ]
+    });
     let result = Ollama {
         port: config.models[index].port,
         trusted_no_truncation: config.models[index].trusted_no_truncation,
     }
-    .generate_bounded(
+    .generate_bounded_with_format(
         &req,
         cancelled,
         &mut |text| {
@@ -485,6 +502,7 @@ fn configured_inference(
             }
         },
         Some(budget.max_input_tokens),
+        structured.then(|| &proposal_schema),
     );
     {
         let (store, id) = &mut reservation;
