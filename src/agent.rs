@@ -373,14 +373,11 @@ fn run_owner_inner(
                     })
                     .map_err(|_| ())
             });
-        store
-            .finish_agent_step(
-                &owner.task,
-                owner.revision,
-                parsed.is_err(),
-                matches!(&parsed, Ok(Proposal::Tool { .. })),
-            )
-            .map_err(|_| "agent_storage")?;
+        if !matches!(&parsed, Ok(Proposal::Tool { .. })) {
+            store
+                .finish_agent_step(&owner.task, owner.revision, parsed.is_err(), false)
+                .map_err(|_| "agent_storage")?;
+        }
         match parsed {
             Ok(Proposal::Tool { request }) => {
                 proposal = Some(request);
@@ -454,9 +451,10 @@ fn run_owner_inner(
     if outcome.is_err() {
         let mut store = SqliteStore::open(&owner.store).map_err(|_| "agent_storage")?;
         store
-            .append_event_at_revision(
+            .finish_agent_result(
                 &owner.task,
                 owner.revision,
+                true,
                 r#"{"type":"checkpoint","status":"denied_or_failed"}"#,
             )
             .map_err(|_| "agent_storage")?;
@@ -488,9 +486,10 @@ fn run_owner_inner(
         drop(db);
         let mut store = SqliteStore::open(&owner.store).map_err(|_| "agent_storage")?;
         store
-            .append_event_at_revision(
+            .finish_agent_result(
                 &owner.task,
                 owner.revision,
+                !verified,
                 &serde_json::json!({"type":"checkpoint", "status":status, "changes":0}).to_string(),
             )
             .map_err(|_| "agent_storage")?;
@@ -549,9 +548,10 @@ fn run_owner_inner(
     };
     let mut store = SqliteStore::open(&owner.store).map_err(|_| storage_error)?;
     store
-        .append_event_at_revision(
+        .finish_agent_result(
             &owner.task,
             owner.revision,
+            status != "verified",
             &serde_json::json!({"type":"checkpoint", "status":status}).to_string(),
         )
         .map_err(|_| storage_error)?;
@@ -662,6 +662,9 @@ fn observe(
     if cancelled.load(Ordering::Relaxed) {
         return Err("cancelled");
     }
+    if SystemTime::now() >= expires {
+        return Err("agent_expired");
+    }
     let mut store = SqliteStore::open(&owner.store).map_err(|_| "agent_storage")?;
     #[cfg(test)]
     let _result_fault = if FAIL_OBSERVATION_RESULT.with(|flag| flag.get()) {
@@ -671,19 +674,16 @@ fn observe(
     } else {
         None
     };
-    // Terminal is durable before reporting: failure to write the checkpoint cannot replay.
-    store
-        .finish_agent_step(&owner.task, owner.revision, !verified, true)
-        .map_err(|_| "agent_storage")?;
     let status = if verified {
         "verified"
     } else {
         "verification_failed"
     };
     store
-        .append_event_at_revision(
+        .finish_agent_result(
             &owner.task,
             owner.revision,
+            !verified,
             &serde_json::json!({"type":"checkpoint","status":status,"changes":0}).to_string(),
         )
         .map_err(|_| "agent_storage")?;
@@ -727,8 +727,10 @@ mod tests {
         use std::io::{Read, Write};
         use std::net::TcpListener;
         use std::time::Instant;
-        let root =
-            std::env::temp_dir().join(format!("agent-observation-{boundary}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "agent-observation-{boundary}-{}",
+            std::process::id()
+        ));
         let mut store = SqliteStore::create(&root).unwrap();
         store
             .create_task(
@@ -846,7 +848,12 @@ mod tests {
         let db = rusqlite::Connection::open(root.join("jarvis.sqlite3")).unwrap();
         match boundary {
             "cancel" => cancelled.store(true, Ordering::Relaxed),
-            "expire" => std::thread::sleep(observe_expiry.duration_since(SystemTime::now()).unwrap_or_default() + Duration::from_millis(50)),
+            "expire" => std::thread::sleep(
+                observe_expiry
+                    .duration_since(SystemTime::now())
+                    .unwrap_or_default()
+                    + Duration::from_millis(50),
+            ),
             "storage" => (),
             _ => unreachable!(),
         }
@@ -912,6 +919,14 @@ mod tests {
         let state: (String, i64, i64, i64) = db.query_row("SELECT (SELECT value FROM mock_state WHERE resource = 'mock/item'), (SELECT pending FROM tool_executions WHERE approval_id = 'read'), (SELECT consumed FROM tool_approvals WHERE id = 'read'), (SELECT used FROM tool_budget)", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
         assert_eq!(state, ("value".into(), 1, 1, 2));
         assert_eq!(result, Err("agent_verification_uncertain"));
+        let runtime: (i64, i64) = db
+            .query_row(
+                "SELECT pending, terminal FROM agent_runtime WHERE task_id = 'task'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(runtime, (1, 0));
         drop(db);
         std::fs::remove_dir_all(path).unwrap();
     }

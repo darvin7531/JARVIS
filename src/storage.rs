@@ -754,6 +754,25 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub fn finish_agent_result(
+        &mut self,
+        task: &str,
+        revision: i64,
+        failed: bool,
+        event: &str,
+    ) -> Result<(), StorageError> {
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let changed = tx.execute("UPDATE agent_runtime SET failures = failures + ?3, pending = 0, terminal = 1 WHERE task_id = ?1 AND revision = ?2 AND pending = 1 AND terminal = 0 AND closed = 0 AND EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND version = ?2)", params![task, revision, failed as i64])?;
+        if changed != 1 {
+            return Err(StorageError::OperationFailed);
+        }
+        tx.execute("INSERT INTO events (task_id, event, revision, occurred_at) VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))", params![task, event, revision])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn append_event_at_revision(
         &mut self,
         task_id: &str,
